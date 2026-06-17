@@ -1,6 +1,7 @@
 """Private Admin Dashboard on port 4090; auth via ADMIN_USER / ADMIN_PASS."""
 import json
 import os
+import secrets
 import time
 from pathlib import Path
 from functools import wraps
@@ -36,9 +37,10 @@ from hit_notifications import normalize_notification_rules, send_discord_notific
 
 app = Flask(__name__)
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
-ADMIN_PASS = os.environ.get("ADMIN_PASS", "changeme")
+ADMIN_PASS = os.environ.get("ADMIN_PASS", "")
 ROOT_DOMAIN = os.environ.get("ROOT_DOMAIN", "example.com")
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
+_DEFAULT_ADMIN_PASSWORDS = frozenset({"", "changeme"})
 
 _NR_TEST_LAST_BY_IP: dict[str, float] = {}
 _NR_TEST_COOLDOWN_SEC = 8.0
@@ -79,11 +81,21 @@ STATUS_OPTIONS = [
 ]
 
 
+def validate_admin_auth_config() -> None:
+    """Refuse to start with missing or default admin credentials."""
+    if ADMIN_PASS in _DEFAULT_ADMIN_PASSWORDS:
+        raise SystemExit(
+            "ADMIN_PASS must be set to a strong, non-default password (not empty or 'changeme')."
+        )
+
+
 def _check_auth():
     auth = request.authorization
     if not auth:
         return False
-    return auth.username == ADMIN_USER and auth.password == ADMIN_PASS
+    user_ok = secrets.compare_digest(auth.username or "", ADMIN_USER)
+    pass_ok = secrets.compare_digest(auth.password or "", ADMIN_PASS)
+    return user_ok and pass_ok
 
 
 def _auth_required(f):

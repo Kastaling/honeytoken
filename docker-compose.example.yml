@@ -25,11 +25,15 @@ services:
       - GEOIP2_DB=/data/GeoLite2-City.mmdb
       - MEDIA_DIR=/media
     volumes:
-      - honey_data:/data
+      - ./data:/data
       # Optional: mount MaxMind GeoLite2-City (download from https://dev.maxmind.com/geoip/geolite2-free-geolocation-data)
       # - ./GeoLite2-City.mmdb:/data/GeoLite2-City.mmdb:ro
       - ./media:/media
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
     restart: unless-stopped
-
-volumes:
-  honey_data:

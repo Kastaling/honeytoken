@@ -85,12 +85,6 @@ def get_lat_lng_city(ip: str) -> dict[str, Any] | None:
         parts.append(country)
     location_display = ", ".join(parts) if parts else (country or name_primary or None)
 
-    # Debug logging
-    city_name = None
-    if getattr(r, "city", None):
-        city_name = getattr(r.city, "name", None)
-    print(f"IP: {ip}, City: {city_name}, Lat: {lat}")
-
     return {
         "latitude": lat,
         "longitude": lon,

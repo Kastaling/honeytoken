@@ -18,7 +18,7 @@ cp docker-compose.example.yml docker-compose.yml
 cp .env.example .env
 # Edit .env — set ADMIN_PASS and ROOT_DOMAIN at minimum
 
-mkdir -p media
+mkdir -p data media
 docker compose up -d --build
 ```
 
@@ -32,7 +32,9 @@ Keep the admin port off the public internet or protect it with a VPN/firewall.
 | Variable | Description |
 |----------|-------------|
 | `ADMIN_USER` | Dashboard login username (default: `admin`) |
-| `ADMIN_PASS` | Dashboard login password (**required** in `docker-compose.example.yml`) |
+| `ADMIN_PASS` | Dashboard login password (**required**; empty and `changeme` are rejected at startup) |
+| `TRAP_THREADS` / `ADMIN_THREADS` | Waitress worker threads (defaults: 8 / 4) |
+| `TRAP_CONNECTION_LIMIT` / `ADMIN_CONNECTION_LIMIT` | Max concurrent connections per service (defaults: 64 / 32) |
 | `ROOT_DOMAIN` | Primary domain for link previews (default: `example.com`) |
 | `DISCORD_WEBHOOK_URL` | Optional legacy Discord webhook for immediate hits |
 | `TELEGRAM_TOKEN` | Optional Telegram bot token |
@@ -86,10 +88,14 @@ The admin UI includes an nginx/NPM custom config snippet (set `TRAP_UPSTREAM` to
 | `.env` | Secrets and `ROOT_DOMAIN` |
 | `GeoLite2-City.mmdb` | MaxMind database |
 | `media/` | Your media files |
-| `honey_data` volume | SQLite DB and `config.json` (dashboard timezone, Discord rules, etc.) |
+| `./data/` | SQLite DB (`honey.db`) and `config.json` (dashboard timezone, Discord rules, etc.) |
+| `GeoLite2-City.mmdb` | MaxMind database |
+| `media/` | Your media files |
+
+## Data location
+
+Runtime data is stored in `./data/` on the host (mounted to `/data` in the container). This makes backups and inspection straightforward — you can copy or snapshot the folder directly.
 
 ## Legal notice
 
 This tool logs network and browser information about visitors who request your URLs. You are responsible for using it lawfully and with appropriate notice or consent in your jurisdiction. Do not use it to harass, stalk, or deceive people.
-
-Data persists in the `honey_data` Docker volume.
