@@ -1,0 +1,18 @@
+# Keep build context small and avoid leaking local secrets into images
+.env
+.env.*
+docker-compose.yml
+docker-compose.override.yml
+GeoLite2-City.mmdb
+GeoLite2-*.mmdb
+*.mmdb
+media/
+data/
+*.db
+__pycache__/
+*.py[cod]
+.git
+.gitignore
+README.md
+docker-compose.example.yml
+.env.example

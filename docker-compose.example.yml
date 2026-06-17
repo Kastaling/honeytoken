@@ -1,0 +1,35 @@
+# Copy to docker-compose.yml and customize for your deployment:
+#   cp docker-compose.example.yml docker-compose.yml
+#
+# Create a .env file for secrets (never commit it):
+#   cp .env.example .env
+
+services:
+  honey:
+    build: .
+    container_name: honey
+    ports:
+      - "4040:4040"   # Trap (public)
+      - "4090:4090"   # Admin dashboard (private — restrict via firewall/VPN)
+    environment:
+      - ROOT_DOMAIN=${ROOT_DOMAIN:-example.com}
+      - ADMIN_USER=${ADMIN_USER:-admin}
+      - ADMIN_PASS=${ADMIN_PASS:?Set ADMIN_PASS in .env or the shell environment}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - DATA_DIR=/data
+      - TRAP_PORT=4040
+      - ADMIN_PORT=4090
+      - TRAP_UPSTREAM=${TRAP_UPSTREAM:-honey:4040}
+      - GEOIP2_DB=/data/GeoLite2-City.mmdb
+      - MEDIA_DIR=/media
+    volumes:
+      - honey_data:/data
+      # Optional: mount MaxMind GeoLite2-City (download from https://dev.maxmind.com/geoip/geolite2-free-geolocation-data)
+      # - ./GeoLite2-City.mmdb:/data/GeoLite2-City.mmdb:ro
+      - ./media:/media
+    restart: unless-stopped
+
+volumes:
+  honey_data:

