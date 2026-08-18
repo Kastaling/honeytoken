@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from hit_notifications import normalize_notification_rules
+from notification_batch import normalize_batch_settings
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 CONFIG_FILE = DATA_DIR / "config.json"
@@ -29,6 +30,8 @@ DEFAULTS = {
     "host_settings": {},  # host -> { mode, ... media_tab_* ... }
     "timezone": DEFAULT_TIMEZONE,  # dashboard display timezone (IANA name)
     "notification_rules": [],  # hit_notifications.normalize_notification_rules
+    "notification_batch_enabled": True,  # coalesce burst alerts to one Discord message
+    "notification_batch_window_sec": 30,  # seconds of quiet before flushing a batch
 }
 VALID_MEDIA_TYPES = ("image", "gif", "video", "youtube")
 VALID_MODES = ("redirect", "media", "error")
@@ -260,6 +263,9 @@ def get_config() -> dict:
             out["notification_rules"] = normalize_notification_rules(out["notification_rules"])
         else:
             out["notification_rules"] = []
+        batch = normalize_batch_settings(out)
+        out["notification_batch_enabled"] = batch["enabled"]
+        out["notification_batch_window_sec"] = batch["window_sec"]
         return out
     finally:
         _LOCK.release()

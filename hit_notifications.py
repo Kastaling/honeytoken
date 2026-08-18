@@ -17,6 +17,8 @@ import requests
 
 from visitor_fingerprint import format_visitor_for_discord, visitor_fp_short
 
+from notification_batch import build_batch_summary_lines, enqueue_notification
+
 # Extensibility: register additional backends at startup via register_hit_notification_channel.
 _CHANNEL_SENDERS: dict[str, Callable[[dict[str, Any], dict[str, Any], str], None]] = {}
 
@@ -494,6 +496,46 @@ def send_discord_webhook(hit: dict[str, Any], rule: dict[str, Any], phase: str) 
         pass
 
 
+def send_discord_webhook_batch(hits: list[dict[str, Any]], rule: dict[str, Any], phase: str) -> None:
+    """Send one summary embed for a burst of hits matching the same rule."""
+    if not hits:
+        return
+    channel = rule.get("channel") or {}
+    url = channel.get("webhook_url") or ""
+    if not url:
+        return
+    rule_name = rule.get("name") or ""
+    title = "Honeytoken burst"
+    if rule_name:
+        title = f"{title}: {rule_name}"
+    lines = build_batch_summary_lines(
+        hits,
+        phase,
+        dropped=int(rule.get("_batch_overflow_dropped") or 0),
+    )
+    embed: dict[str, Any] = {
+        "title": title,
+        "description": "\n".join(lines)[:4096],
+        "color": 0xE67E22,
+    }
+    payload: dict[str, Any] = {"embeds": [embed]}
+    mentions = _mention_content(channel)
+    if mentions:
+        payload["content"] = mentions
+        payload["allowed_mentions"] = {
+            "parse": [],
+            "users": list(channel.get("mention_user_ids") or []),
+            "roles": list(channel.get("mention_role_ids") or []),
+        }
+    uname = channel.get("username")
+    if uname:
+        payload["username"] = uname
+    try:
+        requests.post(url, json=payload, timeout=15)
+    except Exception:
+        pass
+
+
 def send_discord_notification_test(rule: dict[str, Any]) -> tuple[bool, str]:
     """POST one preview embed to this rule's Discord webhook. Returns (success, reason_code)."""
     channel = rule.get("channel") or {}
@@ -558,9 +600,29 @@ def dispatch_hit_notifications(hit: dict[str, Any], phase: str, cfg: dict[str, A
     def _run():
         for rule in to_run:
             try:
-                _send_rule(hit, rule, phase)
+                enqueue_notification(
+                    hit,
+                    rule,
+                    phase,
+                    cfg,
+                    send_one=_send_rule,
+                    send_batch=_send_rule_batch,
+                    force_immediate=bool(hit.get("_notification_test")),
+                )
             except Exception:
                 pass
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
+
+
+def _send_rule_batch(hits: list[dict[str, Any]], rule: dict[str, Any], phase: str) -> None:
+    if not hits:
+        return
+    channel = rule.get("channel") or {}
+    ctype = (channel.get("type") or "").strip().lower()
+    if ctype == "discord_webhook":
+        send_discord_webhook_batch(hits, rule, phase)
+        return
+    for hit in hits:
+        _send_rule(hit, rule, phase)

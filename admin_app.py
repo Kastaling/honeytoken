@@ -2675,7 +2675,7 @@ NGINX_HTML = """
   <div class="wrap">
     <h1>Custom Nginx configuration (npmplus)</h1>
     <p class="meta"><a href="/">← Dashboard</a> · <a href="/links">Links</a> · <a href="/settings">Settings</a></p>
-    <p class="intro">Paste this into your Nginx Proxy Manager (or npmplus) <strong>Custom Nginx Configuration</strong> for the proxy host that serves the trap. It forwards all sub-paths (e.g. /.env, /admin) to the trap container and passes headers correctly. Set <code>TRAP_UPSTREAM</code> (e.g. <code>honey:4040</code> or <code>127.0.0.1:4040</code>) to match your trap backend.</p>
+    <p class="intro">Paste this into your Nginx Proxy Manager (or npmplus) <strong>Custom / Advanced</strong> configuration for the proxy host that serves the trap. NPM injects these directives into its location block — you do <strong>not</strong> need the outer <code>location / {{ '{' }}</code> wrapper. The <code>proxy_set_header</code> lines are required so the trap logs real visitor IPs instead of your server's LAN address.</p>
     <pre id="nginx-config">{{ nginx_config }}</pre>
     <div class="copy">
       <button type="button" id="copy-btn">Copy</button>
@@ -3160,17 +3160,25 @@ def settings():
 
 def _nginx_config_block() -> str:
     upstream = os.environ.get("TRAP_UPSTREAM", "honey:4040")
-    return f"""# Forward all paths (/.env, /admin, etc.) to the trap and pass headers.
-location / {{
-    proxy_pass http://{upstream};
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header Connection "";
-    proxy_buffering off;
-}}
+    return f"""# NPM+ Advanced tab (paste only the lines below, not the location wrapper):
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header Connection "";
+proxy_buffering off;
+
+# Full nginx location block (manual nginx / reference only):
+# location / {{
+#     proxy_pass http://{upstream};
+#     proxy_http_version 1.1;
+#     proxy_set_header Host $host;
+#     proxy_set_header X-Real-IP $remote_addr;
+#     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#     proxy_set_header X-Forwarded-Proto $scheme;
+#     proxy_set_header Connection "";
+#     proxy_buffering off;
+# }}
 """
 
 
