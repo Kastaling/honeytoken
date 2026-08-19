@@ -8,6 +8,7 @@ from functools import wraps
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from flask import Flask, request, Response, render_template_string, redirect, jsonify, make_response
+from flask_wtf.csrf import CSRFProtect, generate_csrf
 from store import (
     create_tracked_link,
     get_hits,
@@ -34,13 +35,17 @@ from config_store import (
 )
 from admin_final_actions import FINAL_ACTIONS_CSS, FINAL_ACTION_ACTION_TEMPLATE, FINAL_ACTIONS_JS
 from hit_notifications import normalize_notification_rules, send_discord_notification_test
+from proxy_trust import cloudflare_cidrs
 
 app = Flask(__name__)
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "")
+ADMIN_SECRET_KEY = os.environ.get("ADMIN_SECRET_KEY", "")
 ROOT_DOMAIN = os.environ.get("ROOT_DOMAIN", "example.com")
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
 _DEFAULT_ADMIN_PASSWORDS = frozenset({"", "changeme"})
+_DEFAULT_ADMIN_SECRET_KEYS = frozenset({"", "changeme", "change-me"})
+csrf = CSRFProtect(app)
 
 _NR_TEST_LAST_BY_IP: dict[str, float] = {}
 _NR_TEST_COOLDOWN_SEC = 8.0
@@ -87,6 +92,16 @@ def validate_admin_auth_config() -> None:
         raise SystemExit(
             "ADMIN_PASS must be set to a strong, non-default password (not empty or 'changeme')."
         )
+    if ADMIN_SECRET_KEY in _DEFAULT_ADMIN_SECRET_KEYS:
+        raise SystemExit(
+            "ADMIN_SECRET_KEY must be set to a random secret (used for CSRF tokens; not empty or 'changeme')."
+        )
+    app.secret_key = ADMIN_SECRET_KEY
+
+
+@app.context_processor
+def _inject_csrf_token():
+    return dict(csrf_token=generate_csrf)
 
 
 def _check_auth():
@@ -235,6 +250,20 @@ def _action_settings_from_form(form) -> dict:
         "media_tab_rotate_interval_sec": form.get("media_tab_rotate_interval_sec"),
         "status_code": form.get("status_code"),
     })
+
+
+def _spam_summary_updates_from_form(form) -> dict:
+    """Parse scheduled spam summary settings (cursors are server-managed, not form fields)."""
+    return {
+        "spam_summary_daily_enabled": form.get("spam_summary_daily_enabled") == "1",
+        "spam_summary_daily_webhook_url": (form.get("spam_summary_daily_webhook_url") or "").strip(),
+        "spam_summary_daily_interval_hours": form.get("spam_summary_daily_interval_hours"),
+        "spam_summary_weekly_enabled": form.get("spam_summary_weekly_enabled") == "1",
+        "spam_summary_weekly_webhook_url": (form.get("spam_summary_weekly_webhook_url") or "").strip(),
+        "spam_summary_weekly_interval_hours": form.get("spam_summary_weekly_interval_hours"),
+        "spam_summary_burst_window_sec": form.get("spam_summary_burst_window_sec"),
+        "spam_summary_top_ips": form.get("spam_summary_top_ips"),
+    }
 
 
 def _external_scheme() -> str:
@@ -552,6 +581,7 @@ DASHBOARD_HTML = """
     </section>
     {% if hits %}
     <form method="post" action="/hits/delete" id="bulk-delete-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="return_page" value="{{ page }}">
       <input type="hidden" name="return_per_page" value="{{ per_page }}">
       {% if filter_gpu %}<input type="hidden" name="return_gpu" value="{{ filter_gpu }}">{% endif %}
@@ -970,6 +1000,7 @@ DELETE_ALL_HTML = """
     </div>
     <p style="color: var(--muted); font-size: 0.875rem;">To confirm, type <strong>DELETE ALL</strong> below and click Delete.</p>
     <form method="post" action="/delete-all" id="del-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <input type="hidden" name="confirm" value="">
       <label for="confirm_input">Confirmation</label>
       <input type="text" id="confirm_input" name="confirm_input" value="" placeholder="Type DELETE ALL" autocomplete="off">
@@ -1141,6 +1172,7 @@ LINKS_HTML = """
       <h2>Create a Link</h2>
       <p class="muted">Settings below are cloned from the selected host by default. After creation, each link has its own saved settings.</p>
       <form method="post" action="/links" id="link-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <div class="grid">
           <div>
             <label for="host">Host</label>
@@ -1548,6 +1580,7 @@ LINK_DETAIL_HTML = """
     <section class="card">
       <h2>Edit Link</h2>
       <form method="post" action="/links/{{ link.get('_id') }}" id="link-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label for="label">Label</label>
         <input type="text" id="label" name="label" value="{{ link.get('label', '') }}" maxlength="200">
         <label style="display:flex;align-items:center;gap:0.5rem;"><input type="checkbox" name="active" value="1" {{ 'checked' if link.get('active') else '' }} style="width:auto;"> Active</label>
@@ -1737,6 +1770,7 @@ SETTINGS_HTML = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
   <title>Settings – Honeytoken Admin</title>
   <style>
     :root { --bg: #0a0a0b; --surface: #141416; --border: #27272a; --muted: #71717a; --text: #fafafa; --accent: #3b82f6; --green: #22c55e; }
@@ -1830,6 +1864,7 @@ SETTINGS_HTML = """
     <p class="meta"><a href="/">← Dashboard</a> · <a href="/links">Links</a> · <a href="/nginx">Nginx config</a></p>
     <p style="color: var(--muted); font-size: 0.875rem;">Configure the <strong>final action</strong> after client-side capture.</p>
     <form method="post" action="/settings" id="settings-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <p class="section-label">Display</p>
       <label for="timezone">Dashboard timezone</label>
       <select id="timezone" name="timezone">
@@ -2025,6 +2060,36 @@ SETTINGS_HTML = """
         </select>
         <button type="button" id="add-host-detected-btn">Add</button>
       </div>
+      <p class="section-label">Scheduled spam summaries</p>
+      <p class="hint" style="margin-top:0;">Automatic <code>analyze_spam</code>-style Discord reports on a timer. Daily and weekly tiers use <strong>separate webhooks and cursors</strong> — each only covers hits since its own last send, so they never steal data from each other.</p>
+      <div class="host-block" style="margin-bottom:0.75rem;">
+        <div class="host-block-header"><strong>Daily summary</strong></div>
+        <label style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+          <input type="checkbox" name="spam_summary_daily_enabled" value="1" {{ 'checked' if spam_summary_daily_enabled else '' }} style="width:auto;">
+          <span>Enabled</span>
+        </label>
+        <label for="spam_summary_daily_webhook_url">Discord webhook URL</label>
+        <input type="text" id="spam_summary_daily_webhook_url" name="spam_summary_daily_webhook_url" value="{{ spam_summary_daily_webhook_url }}" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" spellcheck="false">
+        <label for="spam_summary_daily_interval_hours">Interval (hours)</label>
+        <input type="number" id="spam_summary_daily_interval_hours" name="spam_summary_daily_interval_hours" value="{{ spam_summary_daily_interval_hours }}" min="1" max="720" step="1">
+        <p class="hint" style="margin:0.25rem 0 0;">Default 24. Last sent (UTC): <code>{{ spam_summary_daily_last_sent_at or 'never' }}</code></p>
+      </div>
+      <div class="host-block" style="margin-bottom:0.75rem;">
+        <div class="host-block-header"><strong>Weekly summary</strong></div>
+        <label style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+          <input type="checkbox" name="spam_summary_weekly_enabled" value="1" {{ 'checked' if spam_summary_weekly_enabled else '' }} style="width:auto;">
+          <span>Enabled</span>
+        </label>
+        <label for="spam_summary_weekly_webhook_url">Discord webhook URL</label>
+        <input type="text" id="spam_summary_weekly_webhook_url" name="spam_summary_weekly_webhook_url" value="{{ spam_summary_weekly_webhook_url }}" placeholder="https://discord.com/api/webhooks/..." autocomplete="off" spellcheck="false">
+        <label for="spam_summary_weekly_interval_hours">Interval (hours)</label>
+        <input type="number" id="spam_summary_weekly_interval_hours" name="spam_summary_weekly_interval_hours" value="{{ spam_summary_weekly_interval_hours }}" min="24" max="720" step="1">
+        <p class="hint" style="margin:0.25rem 0 0;">Default 168 (7 days). Last sent (UTC): <code>{{ spam_summary_weekly_last_sent_at or 'never' }}</code></p>
+      </div>
+      <label for="spam_summary_burst_window_sec">Burst window (seconds, shared)</label>
+      <input type="number" id="spam_summary_burst_window_sec" name="spam_summary_burst_window_sec" value="{{ spam_summary_burst_window_sec }}" min="15" max="600" step="1">
+      <label for="spam_summary_top_ips">Top IPs per burst (shared)</label>
+      <input type="number" id="spam_summary_top_ips" name="spam_summary_top_ips" value="{{ spam_summary_top_ips }}" min="3" max="25" step="1">
       <p class="section-label">Hit notifications</p>
       <p class="hint" style="margin-top:0;">Filtered webhooks (Discord today). Use <strong>Immediately</strong> for server-side data only (IP, host, path, UA). Use <strong>After client capture</strong> when filtering on GPU or canvas fingerprint. Rules that require GPU/canvas are automatically switched to after capture when saved.</p>
       <p class="hint">When any rule is <strong>enabled</strong>, legacy <code>DISCORD_WEBHOOK_URL</code> / Telegram env alerts are not used (configure Discord via rules instead).</p>
@@ -2495,7 +2560,11 @@ SETTINGS_HTML = """
             fetch('/api/notification-rule-test', {
               method: 'POST',
               credentials: 'same-origin',
-              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'X-CSRFToken': document.querySelector('meta[name=csrf-token]').getAttribute('content')
+              },
               body: JSON.stringify({ rule_snapshot: payload })
             }).then(function(r) {
               return r.json().catch(function() { return {}; }).then(function(j) { return { ok: r.ok, status: r.status, j: j }; });
@@ -2675,7 +2744,7 @@ NGINX_HTML = """
   <div class="wrap">
     <h1>Custom Nginx configuration (npmplus)</h1>
     <p class="meta"><a href="/">← Dashboard</a> · <a href="/links">Links</a> · <a href="/settings">Settings</a></p>
-    <p class="intro">Paste this into your Nginx Proxy Manager (or npmplus) <strong>Custom / Advanced</strong> configuration for the proxy host that serves the trap. NPM injects these directives into its location block — you do <strong>not</strong> need the outer <code>location / {{ '{' }}</code> wrapper. The <code>proxy_set_header</code> lines are required so the trap logs real visitor IPs instead of your server's LAN address.</p>
+    <p class="intro">Paste this into your Nginx Proxy Manager (or npmplus) configuration for the proxy host that serves the trap. Honey honors <code>Cf-Connecting-Ip</code> only on direct Cloudflare connections (TCP peer is a CF edge). Behind NPM, put the visitor IP in <code>X-Real-IP</code> — typically via <code>set_real_ip_from</code> + <code>real_ip_header CF-Connecting-IP</code> at server scope (see block below), then <code>proxy_set_header X-Real-IP $remote_addr</code> in Advanced. Client <code>X-Forwarded-For</code> is never trusted.</p>
     <pre id="nginx-config">{{ nginx_config }}</pre>
     <div class="copy">
       <button type="button" id="copy-btn">Copy</button>
@@ -3123,6 +3192,7 @@ def settings():
                     pass
             else:
                 updates["notification_rules"] = []
+        updates.update(_spam_summary_updates_from_form(request.form))
         save_config(updates)
         saved = True
         cfg = get_config()
@@ -3148,6 +3218,16 @@ def settings():
         mode=mode,
         host_settings=cfg.get("host_settings") or {},
         notification_rules=cfg.get("notification_rules") or [],
+        spam_summary_daily_enabled=cfg.get("spam_summary_daily_enabled", False),
+        spam_summary_daily_webhook_url=cfg.get("spam_summary_daily_webhook_url", ""),
+        spam_summary_daily_interval_hours=cfg.get("spam_summary_daily_interval_hours", 24),
+        spam_summary_daily_last_sent_at=cfg.get("spam_summary_daily_last_sent_at", ""),
+        spam_summary_weekly_enabled=cfg.get("spam_summary_weekly_enabled", False),
+        spam_summary_weekly_webhook_url=cfg.get("spam_summary_weekly_webhook_url", ""),
+        spam_summary_weekly_interval_hours=cfg.get("spam_summary_weekly_interval_hours", 168),
+        spam_summary_weekly_last_sent_at=cfg.get("spam_summary_weekly_last_sent_at", ""),
+        spam_summary_burst_window_sec=cfg.get("spam_summary_burst_window_sec", 60),
+        spam_summary_top_ips=cfg.get("spam_summary_top_ips", 10),
         timezone=(cfg.get("timezone") or DEFAULT_TIMEZONE).strip() or DEFAULT_TIMEZONE,
         status_options=STATUS_OPTIONS,
         action_settings_initial=normalize_action_settings(cfg),
@@ -3160,8 +3240,20 @@ def settings():
 
 def _nginx_config_block() -> str:
     upstream = os.environ.get("TRAP_UPSTREAM", "honey:4040")
-    return f"""# NPM+ Advanced tab (paste only the lines below, not the location wrapper):
+    cidrs = cloudflare_cidrs()
+    realip_lines = ""
+    if cidrs:
+        realip_body = "\n".join(f"set_real_ip_from {c};" for c in cidrs)
+        realip_lines = f"""
+# NPM server / http scope (Custom Nginx Configuration tab on the proxy host — NOT Advanced):
+# After this, $remote_addr is the visitor when the immediate peer is Cloudflare.
+{realip_body}
+real_ip_header CF-Connecting-IP;
+
+"""
+    return f"""{realip_lines}# NPM+ Advanced tab (paste only the lines below, not the location wrapper):
 proxy_set_header Host $host;
+# Visitor IP when real_ip is configured above; otherwise NPM's TCP peer.
 proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;

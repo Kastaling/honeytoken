@@ -4,6 +4,12 @@ Debounce/batch hit notifications during bursts so Discord is not spammed.
 First hit in a quiet period sends immediately. Additional matching hits within the
 batch window are held; when the window closes (no new hits for batch_window_sec),
 one summary webhook is sent for the overflow batch.
+
+Process model: batch state lives in module-level globals protected by a lock.
+This is correct for the default single-process Waitress deployment (one worker
+thread pool). Do not run under multi-worker servers (e.g. gunicorn with workers > 1)
+without replacing this with shared storage — each worker would maintain separate
+batch state and debouncing would not work as intended.
 """
 from __future__ import annotations
 

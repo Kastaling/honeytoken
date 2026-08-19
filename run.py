@@ -8,6 +8,7 @@ from waitress import serve
 from db import init_db
 from trap_app import app as trap_app
 from admin_app import app as admin_app, validate_admin_auth_config
+from spam_summary_scheduler import start_spam_summary_scheduler
 
 TRAP_PORT = int(os.environ.get("TRAP_PORT", "4040"))
 ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "4090"))
@@ -44,6 +45,7 @@ def run_admin():
 if __name__ == "__main__":
     validate_admin_auth_config()
     init_db()
+    start_spam_summary_scheduler()
     t1 = threading.Thread(target=run_trap, daemon=False, name="trap-waitress")
     t2 = threading.Thread(target=run_admin, daemon=False, name="admin-waitress")
     t1.start()

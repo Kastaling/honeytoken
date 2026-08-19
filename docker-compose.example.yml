@@ -9,12 +9,15 @@ services:
     build: .
     container_name: honey
     ports:
-      - "4040:4040"   # Trap (public)
-      - "4090:4090"   # Admin dashboard (private — restrict via firewall/VPN)
+      # Trap: localhost only — reverse proxy on the same host should use 127.0.0.1:4040
+      - "127.0.0.1:4040:4040"
+      # Admin: all interfaces — reach via LAN/Tailscale/VPN (e.g. http://your-host:4090)
+      - "4090:4090"
     environment:
       - ROOT_DOMAIN=${ROOT_DOMAIN:-example.com}
       - ADMIN_USER=${ADMIN_USER:-admin}
       - ADMIN_PASS=${ADMIN_PASS:?Set ADMIN_PASS in .env or the shell environment}
+      - ADMIN_SECRET_KEY=${ADMIN_SECRET_KEY:?Set ADMIN_SECRET_KEY in .env or the shell environment}
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
       - TELEGRAM_TOKEN=${TELEGRAM_TOKEN:-}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}

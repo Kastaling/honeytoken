@@ -20,6 +20,7 @@ from visitor_fingerprint import (
 )
 from geo import enrich_hit_location
 from geoip2_lookup import get_lat_lng_city
+from proxy_trust import resolve_client_ip
 
 app = Flask(__name__, template_folder="templates")
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
@@ -46,27 +47,12 @@ STATUS_MESSAGES = {
 }
 
 
-def _client_ip_from_header(name: str) -> str:
-    """First IP from a comma-separated proxy header value."""
-    val = request.headers.get(name)
-    if not val:
-        return ""
-    return val.split(",")[0].strip()
-
-
 def _real_ip() -> str:
     """Resolve visitor IP behind Cloudflare / NPM / other reverse proxies."""
-    for header in (
-        "Cf-Connecting-Ip",
-        "CF-Connecting-IP",
-        "X-Forwarded-For",
-        "X-Real-Ip",
-        "X-Real-IP",
-    ):
-        ip = _client_ip_from_header(header)
-        if ip:
-            return ip
-    return request.remote_addr or ""
+    return resolve_client_ip(
+        request.remote_addr or "",
+        request.headers.get,
+    )
 
 
 def _request_host() -> str:

@@ -2,7 +2,7 @@
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, Session
 
 from models import Base, DATABASE_URL
@@ -19,7 +19,30 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+def _configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
+    """Run SQLite pragmas on the raw DB-API connection (not inside a SQLAlchemy transaction)."""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.close()
+
+
+if DATABASE_URL.startswith("sqlite"):
+    event.listen(engine, "connect", _configure_sqlite_connection)
+
+
+def _ensure_sqlite_wal() -> None:
+    """Enable WAL before schema work; journal_mode cannot change inside a transaction."""
+    if not DATABASE_URL.startswith("sqlite"):
+        return
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        mode = conn.execute(text("PRAGMA journal_mode=WAL")).scalar()
+        if mode != "wal":
+            raise RuntimeError(f"SQLite journal_mode is {mode!r}, expected 'wal'")
+
+
 def init_db() -> None:
+    _ensure_sqlite_wal()
     Base.metadata.create_all(bind=engine)
     # Add location_display column if it doesn't exist (existing DBs)
     try:

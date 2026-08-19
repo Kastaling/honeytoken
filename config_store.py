@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from hit_notifications import normalize_notification_rules
 from notification_batch import normalize_batch_settings
+from spam_analysis import normalize_spam_summary_settings
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 CONFIG_FILE = DATA_DIR / "config.json"
@@ -32,6 +33,16 @@ DEFAULTS = {
     "notification_rules": [],  # hit_notifications.normalize_notification_rules
     "notification_batch_enabled": True,  # coalesce burst alerts to one Discord message
     "notification_batch_window_sec": 30,  # seconds of quiet before flushing a batch
+    "spam_summary_daily_enabled": False,
+    "spam_summary_daily_webhook_url": "",
+    "spam_summary_daily_interval_hours": 24,
+    "spam_summary_daily_last_sent_at": "",
+    "spam_summary_weekly_enabled": False,
+    "spam_summary_weekly_webhook_url": "",
+    "spam_summary_weekly_interval_hours": 168,
+    "spam_summary_weekly_last_sent_at": "",
+    "spam_summary_burst_window_sec": 60,
+    "spam_summary_top_ips": 10,
 }
 VALID_MEDIA_TYPES = ("image", "gif", "video", "youtube")
 VALID_MODES = ("redirect", "media", "error")
@@ -266,6 +277,7 @@ def get_config() -> dict:
         batch = normalize_batch_settings(out)
         out["notification_batch_enabled"] = batch["enabled"]
         out["notification_batch_window_sec"] = batch["window_sec"]
+        out.update(normalize_spam_summary_settings(out))
         return out
     finally:
         _LOCK.release()
@@ -295,6 +307,7 @@ def save_config(updates: dict) -> dict:
             current["notification_rules"] = normalize_notification_rules(current["notification_rules"])
         else:
             current["notification_rules"] = []
+        current.update(normalize_spam_summary_settings(current))
         CONFIG_FILE.write_text(json.dumps(current, indent=2), encoding="utf-8")
         return dict(DEFAULTS) | current
     finally:
