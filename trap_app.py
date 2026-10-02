@@ -1,33 +1,70 @@
 """Public Trap app on port 4040: catch-all, capture headers, fingerprint, jitter."""
+
 import json
 import os
 import re
-import random
 import secrets
-import time
 from pathlib import Path
-from flask import Flask, request, render_template, jsonify, send_from_directory
-from fingerprint import build_fingerprint
-from store import add_hit, get_hit_by_id, get_hit_capture_context, get_tracked_link, get_tracked_link_by_path, get_tracked_link_by_token, get_visitor_visit_stats, update_hit
+
+from flask import Flask, jsonify, render_template, request, send_from_directory
+
 from alerts import notify_hit
+from config_store import (
+    describe_final_action_taken,
+    get_config,
+    normalize_action_settings,
+    normalize_single_action,
+    resolve_action_for_capture,
+)
+from fingerprint import build_fingerprint
+from geoip2_lookup import get_lat_lng_city
 from hit_notifications import NOTIFICATION_PHASE_AFTER_CAPTURE, NOTIFICATION_PHASE_IMMEDIATE
-from config_store import get_config, resolve_action_for_capture, describe_final_action_taken, normalize_action_settings, normalize_single_action
+from proxy_trust import resolve_client_ip
+from store import (
+    add_hit,
+    get_hit_by_id,
+    get_hit_capture_context,
+    get_tracked_link,
+    get_tracked_link_by_path,
+    get_tracked_link_by_token,
+    get_visitor_visit_stats,
+    update_hit,
+)
 from visitor_fingerprint import (
     MAX_CLIENT_PAYLOAD_BYTES,
     compute_visitor_fp_id,
     merge_client_fingerprints,
     sanitize_client_fingerprint,
 )
-from geo import enrich_hit_location
-from geoip2_lookup import get_lat_lng_city
-from proxy_trust import resolve_client_ip
 
 app = Flask(__name__, template_folder="templates")
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
 
+
+@app.after_request
+def _trap_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
+
+
 VALID_STATUS_CODES = (
-    403, 404, 410, 412, 418,
-    500, 501, 502, 503, 504, 505, 506, 507, 508,
+    403,
+    404,
+    410,
+    412,
+    418,
+    500,
+    501,
+    502,
+    503,
+    504,
+    505,
+    506,
+    507,
+    508,
 )
 STATUS_MESSAGES = {
     403: ("403 Forbidden", "Forbidden"),
@@ -56,16 +93,20 @@ def _real_ip() -> str:
 
 
 def _request_host() -> str:
-    """Host the client used: X-Forwarded-Host (when behind proxy) else Host."""
-    host = request.headers.get("X-Forwarded-Host")
-    if host:
-        return host.split(",")[0].strip()
-    return (request.headers.get("Host") or "").strip()
+    """Return the proxy-controlled Host value without an optional port."""
+    host = (request.headers.get("Host") or "").split(",", 1)[0].strip().lower()
+    if host.startswith("["):
+        closing = host.find("]")
+        return host[: closing + 1] if closing >= 0 else host
+    name, separator, port = host.rpartition(":")
+    if separator and port.isdigit():
+        host = name
+    return host.rstrip(".")[:255]
 
 
 def _normalize_host(host: str) -> str:
     """Normalize host for config lookup (lowercase, strip)."""
-    return (host or "").strip().lower()
+    return (host or "").strip().lower().rstrip(".")[:255]
 
 
 def _settings_for_host(cfg: dict, host: str) -> dict:
@@ -177,7 +218,9 @@ def _response_for_settings(s: dict):
             embed_html = _youtube_embed_html(media_url)
             if embed_html:
                 if tab_config.get("mode") != "none":
-                    embed_html = embed_html.replace("</body></html>", _media_tab_script_inline(tab_config) + "</body></html>")
+                    embed_html = embed_html.replace(
+                        "</body></html>", _media_tab_script_inline(tab_config) + "</body></html>"
+                    )
                 return jsonify(
                     action="media",
                     media_type="youtube",
@@ -224,12 +267,10 @@ def serve_media(filepath: str):
 @app.route("/", defaults={"path": ""}, methods=["GET", "POST", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"])
 @app.route("/<path:path>", methods=["GET", "POST", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"])
 def catch_all(path):
-    time.sleep(random.uniform(0.5, 2.0))
-
     req_path = "/" + path if path else "/"
     if _is_favicon(path):
         return (
-            render_template("trap_loading.html", hit_id=0, capture_token=""),
+            render_template("trap_loading.html", hit_id=0, capture_token=""),  # nosec B106
             200,
             {"Content-Type": "text/html; charset=utf-8"},
         )
@@ -261,16 +302,13 @@ def catch_all(path):
         "city": geo.get("city") if geo else None,
         "location_display": geo.get("location_display") if geo else None,
         "location": (
-            {"city": geo.get("city"), "region": geo.get("region"), "country": geo.get("country")}
-            if geo else {}
+            {"city": geo.get("city"), "region": geo.get("region"), "country": geo.get("country")} if geo else {}
         ),
         "link_id": tracked_link.get("_id") if tracked_link else None,
         "capture_token": secrets.token_urlsafe(24),
     }
     hit_id = add_hit(record)
     notify_hit({**record, "_id": hit_id}, phase=NOTIFICATION_PHASE_IMMEDIATE)
-    enrich_hit_location(hit_id, ip)
-
     return (
         render_template("trap_loading.html", hit_id=hit_id, capture_token=record["capture_token"]),
         200,
@@ -280,9 +318,6 @@ def catch_all(path):
 
 @app.route("/capture", methods=["POST"])
 def capture():
-    # Jitter first so the final command is delayed before the client receives it
-    time.sleep(random.uniform(0.5, 2.0))
-
     try:
         raw_body = request.get_data(cache=True) or b""
         if len(raw_body) > MAX_CLIENT_PAYLOAD_BYTES:
@@ -333,7 +368,11 @@ def capture():
         if capture_token_valid:
             hid = int(hit_context["_id"])
             link_id = hit_context.get("link_id")
-            prior_cf = (existing_hit or {}).get("client_fingerprint") if isinstance((existing_hit or {}).get("client_fingerprint"), dict) else {}
+            prior_cf = (
+                (existing_hit or {}).get("client_fingerprint")
+                if isinstance((existing_hit or {}).get("client_fingerprint"), dict)
+                else {}
+            )
             already_captured = bool(prior_cf.get("capture_complete"))
             client_fp = merge_client_fingerprints(prior_cf, client_fp)
             client_fp["resolved_final_action"] = resolved_action

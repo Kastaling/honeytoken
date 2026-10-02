@@ -5,19 +5,22 @@ Phases:
   immediate — right after the hit is stored (no client GPU/canvas yet).
   after_capture — after /capture persists client_fingerprint (GPU/canvas filters apply).
 """
+
 from __future__ import annotations
 
+import logging
 import re
 import secrets
-import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
 
+from notification_batch import build_batch_summary_lines, enqueue_notification
 from visitor_fingerprint import format_visitor_for_discord, visitor_fp_short
 
-from notification_batch import build_batch_summary_lines, enqueue_notification
+logger = logging.getLogger(__name__)
 
 # Extensibility: register additional backends at startup via register_hit_notification_channel.
 _CHANNEL_SENDERS: dict[str, Callable[[dict[str, Any], dict[str, Any], str], None]] = {}
@@ -29,9 +32,7 @@ VALID_TRIGGERS = (NOTIFICATION_PHASE_IMMEDIATE, NOTIFICATION_PHASE_AFTER_CAPTURE
 FILTER_TRUTH = ("any", "yes", "no")
 
 DISCORD_WEBHOOK_PATH_PREFIX = "/api/webhooks/"
-ALLOWED_DISCORD_WEBHOOK_NETLOCS = frozenset(
-    {"discord.com", "discordapp.com", "canary.discord.com", "ptb.discord.com"}
-)
+ALLOWED_DISCORD_WEBHOOK_NETLOCS = frozenset({"discord.com", "discordapp.com", "canary.discord.com", "ptb.discord.com"})
 SNOWFLAKE_RE = re.compile(r"^\d{17,22}$")
 MAX_RULES = 50
 WEBHOOK_URL_MAX_LEN = 512
@@ -251,7 +252,7 @@ def hit_matches_filters(hit: dict[str, Any], filters: dict[str, Any], phase: str
             return False
     pc = (filters.get("path_contains") or "").strip()
     if pc:
-        path = (hit.get("path") or "")
+        path = hit.get("path") or ""
         if pc.lower() not in path.lower():
             return False
     allowed_links = _allowed_link_ids_from_filters(filters)
@@ -367,7 +368,11 @@ def _discord_embed_body(hit: dict[str, Any], rule_name: str, phase: str) -> dict
         lines.append(_format_final_action_line(fa))
     visit = hit.get("visitor_visit")
     if not isinstance(visit, dict) or not visit:
-        cf_visit = (hit.get("client_fingerprint") or {}).get("visit") if isinstance(hit.get("client_fingerprint"), dict) else None
+        cf_visit = (
+            (hit.get("client_fingerprint") or {}).get("visit")
+            if isinstance(hit.get("client_fingerprint"), dict)
+            else None
+        )
         visit = cf_visit if isinstance(cf_visit, dict) else {}
     if phase == NOTIFICATION_PHASE_AFTER_CAPTURE:
         lines.append(format_visitor_for_discord(visit))
@@ -434,8 +439,7 @@ def sample_hit_for_notification_test(rule: dict[str, Any]) -> dict[str, Any]:
         "link_id": link_id,
         "client_fingerprint": {
             "webgl_renderer": (
-                "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device "
-                "(Subzero) (0x0000C0DE)), SwiftShader driver)"
+                "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
             ),
             "canvas_hash": "9f3e2b1a8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2",
         },
@@ -463,7 +467,9 @@ def sample_hit_for_notification_test(rule: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def discord_webhook_payload(hit: dict[str, Any], rule: dict[str, Any], phase: str) -> tuple[str, dict[str, Any]] | tuple[None, None]:
+def discord_webhook_payload(
+    hit: dict[str, Any], rule: dict[str, Any], phase: str
+) -> tuple[str, dict[str, Any]] | tuple[None, None]:
     """Return (webhook_url, json_payload) or (None, None) if misconfigured."""
     channel = rule.get("channel") or {}
     url = channel.get("webhook_url") or ""
@@ -492,8 +498,8 @@ def send_discord_webhook(hit: dict[str, Any], rule: dict[str, Any], phase: str) 
         return
     try:
         requests.post(url, json=payload, timeout=12)
-    except Exception:
-        pass
+    except requests.RequestException as exc:
+        logger.warning("Discord notification failed: %s", type(exc).__name__)
 
 
 def send_discord_webhook_batch(hits: list[dict[str, Any]], rule: dict[str, Any], phase: str) -> None:
@@ -532,8 +538,8 @@ def send_discord_webhook_batch(hits: list[dict[str, Any]], rule: dict[str, Any],
         payload["username"] = uname
     try:
         requests.post(url, json=payload, timeout=15)
-    except Exception:
-        pass
+    except requests.RequestException as exc:
+        logger.warning("Discord batch notification failed: %s", type(exc).__name__)
 
 
 def send_discord_notification_test(rule: dict[str, Any]) -> tuple[bool, str]:
@@ -597,23 +603,19 @@ def dispatch_hit_notifications(hit: dict[str, Any], phase: str, cfg: dict[str, A
     if not to_run:
         return
 
-    def _run():
-        for rule in to_run:
-            try:
-                enqueue_notification(
-                    hit,
-                    rule,
-                    phase,
-                    cfg,
-                    send_one=_send_rule,
-                    send_batch=_send_rule_batch,
-                    force_immediate=bool(hit.get("_notification_test")),
-                )
-            except Exception:
-                pass
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
+    for rule in to_run:
+        try:
+            enqueue_notification(
+                hit,
+                rule,
+                phase,
+                cfg,
+                send_one=_send_rule,
+                send_batch=_send_rule_batch,
+                force_immediate=bool(hit.get("_notification_test")),
+            )
+        except Exception:
+            logger.exception("Notification rule failed: %s", rule.get("id") or "unknown")
 
 
 def _send_rule_batch(hits: list[dict[str, Any]], rule: dict[str, Any], phase: str) -> None:

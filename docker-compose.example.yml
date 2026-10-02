@@ -11,8 +11,8 @@ services:
     ports:
       # Trap: localhost only — reverse proxy on the same host should use 127.0.0.1:4040
       - "127.0.0.1:4040:4040"
-      # Admin: all interfaces — reach via LAN/Tailscale/VPN (e.g. http://your-host:4090)
-      - "4090:4090"
+      # Admin: bind to localhost by default. Set ADMIN_BIND_IP to your Tailscale IP for MagicDNS access.
+      - "${ADMIN_BIND_IP:-127.0.0.1}:4090:4090"
     environment:
       - ROOT_DOMAIN=${ROOT_DOMAIN:-example.com}
       - ADMIN_USER=${ADMIN_USER:-admin}
@@ -25,6 +25,13 @@ services:
       - DATA_DIR=/data
       - TRAP_PORT=4040
       - ADMIN_PORT=4090
+      - TRAP_MAX_REQUEST_BODY_SIZE=65536
+      - ADMIN_MAX_REQUEST_BODY_SIZE=1048576
+      - MAX_REQUEST_HEADER_SIZE=65536
+      - BACKGROUND_WORKERS=4
+      - BACKGROUND_QUEUE_CAPACITY=128
+      # Optional automatic pruning; 0 keeps hits indefinitely.
+      - HIT_RETENTION_DAYS=${HIT_RETENTION_DAYS:-0}
       - TRAP_UPSTREAM=${TRAP_UPSTREAM:-honey:4040}
       - GEOIP2_DB=/data/GeoLite2-City.mmdb
       - MEDIA_DIR=/media
@@ -39,5 +46,16 @@ services:
       - ALL
     read_only: true
     tmpfs:
-      - /tmp
+      - /tmp:size=64m,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4090/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped

@@ -14,6 +14,7 @@ server/http scope so ``$remote_addr`` is the visitor before the Advanced-tab
 spoof visitor IPs via headers. Configure extra proxy CIDRs with
 ``TRUSTED_PROXY_CIDRS`` (comma-separated).
 """
+
 from __future__ import annotations
 
 import ipaddress

@@ -1,16 +1,18 @@
 """Persistent store for hits and generated tracking links."""
+
 import json
 import re
 import secrets
 import threading
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
-from visitor_fingerprint import visitor_fp_filter_token, visitor_fp_short
-from db import init_db, get_session
+from config_store import normalize_action_settings
+from db import get_session, init_db
 from models import Hit, TrackedLink
+from visitor_fingerprint import visitor_fp_filter_token, visitor_fp_short
 
 # Filter limits for security
 FILTER_LOCATION_MAX_LEN = 200
@@ -105,14 +107,14 @@ def _apply_filters(query, filters: dict):
         query = query.filter(Hit.visitor_fp_id.isnot(None))
         # prior visit exists: another hit with same fingerprint and lower id
         query = query.filter(
-            text(
-                "EXISTS (SELECT 1 FROM hits h2 WHERE h2.visitor_fp_id = hits.visitor_fp_id "
-                "AND h2.id < hits.id)"
-            )
+            text("EXISTS (SELECT 1 FROM hits h2 WHERE h2.visitor_fp_id = hits.visitor_fp_id AND h2.id < hits.id)")
         )
     return query
 
+
 _LOCK = threading.Lock()
+_DB_INIT_LOCK = threading.Lock()
+_DB_READY = False
 
 
 def _session() -> Session:
@@ -120,7 +122,18 @@ def _session() -> Session:
 
 
 def _ensure_db():
-    init_db()
+    global _DB_READY
+    if _DB_READY:
+        return
+    with _DB_INIT_LOCK:
+        if not _DB_READY:
+            init_db()
+            _DB_READY = True
+
+
+def initialize_store() -> None:
+    """Initialize schema once before serving requests."""
+    _ensure_db()
 
 
 def add_hit(record: dict) -> int:
@@ -142,7 +155,9 @@ def add_hit(record: dict) -> int:
                 latitude=record.get("latitude"),
                 longitude=record.get("longitude"),
                 city=record.get("city"),
-                client_fingerprint=json.dumps(record.get("client_fingerprint") or {}) if record.get("client_fingerprint") else None,
+                client_fingerprint=json.dumps(record.get("client_fingerprint") or {})
+                if record.get("client_fingerprint")
+                else None,
                 link_id=record.get("link_id"),
                 capture_token=record.get("capture_token"),
             )
@@ -187,13 +202,7 @@ def get_distinct_hosts(limit: int = 100) -> list[str]:
     s = _session()
     try:
         _ensure_db()
-        rows = (
-            s.query(Hit.host)
-            .filter(Hit.host.isnot(None), Hit.host != "")
-            .distinct()
-            .limit(limit)
-            .all()
-        )
+        rows = s.query(Hit.host).filter(Hit.host.isnot(None), Hit.host != "").distinct().limit(limit).all()
         return [r[0].strip() for r in rows if r[0] and r[0].strip()]
     finally:
         s.close()
@@ -365,7 +374,7 @@ def update_tracked_link(link_id: int, updates: dict) -> dict | None:
                 link.active = bool(updates.get("active"))
             if "settings" in updates:
                 link.settings = json.dumps(normalize_action_settings(updates.get("settings") or {}))
-            link.updated_at = datetime.utcnow()
+            link.updated_at = datetime.now(UTC).replace(tzinfo=None)
             s.commit()
             s.refresh(link)
             return link.to_dict()
@@ -415,12 +424,17 @@ def list_tracked_links(sort: str = "newest", limit: int = 500, offset: int = 0) 
         rows = q.offset(offset).limit(limit).all()
         out = []
         for link, hits, ips, first, last in rows:
-            out.append(_link_to_dict(link, {
-                "total_hits": int(hits or 0),
-                "unique_ips": int(ips or 0),
-                "first_hit": first.isoformat() + "Z" if first else None,
-                "last_hit": last.isoformat() + "Z" if last else None,
-            }))
+            out.append(
+                _link_to_dict(
+                    link,
+                    {
+                        "total_hits": int(hits or 0),
+                        "unique_ips": int(ips or 0),
+                        "first_hit": first.isoformat() + "Z" if first else None,
+                        "last_hit": last.isoformat() + "Z" if last else None,
+                    },
+                )
+            )
         return out
     finally:
         s.close()
@@ -460,14 +474,16 @@ def get_tracked_link_stats(link_id: int) -> dict | None:
             .all()
         )
         data = link.to_dict()
-        data.update({
-            "total_hits": int(total_hits or 0),
-            "unique_ips": int(unique_ips or 0),
-            "first_hit": first_hit.isoformat() + "Z" if first_hit else None,
-            "last_hit": last_hit.isoformat() + "Z" if last_hit else None,
-            "by_host": [{"host": host or "", "count": int(count or 0)} for host, count in by_host],
-            "by_path": [{"path": path or "", "count": int(count or 0)} for path, count in by_path],
-        })
+        data.update(
+            {
+                "total_hits": int(total_hits or 0),
+                "unique_ips": int(unique_ips or 0),
+                "first_hit": first_hit.isoformat() + "Z" if first_hit else None,
+                "last_hit": last_hit.isoformat() + "Z" if last_hit else None,
+                "by_host": [{"host": host or "", "count": int(count or 0)} for host, count in by_host],
+                "by_path": [{"path": path or "", "count": int(count or 0)} for path, count in by_path],
+            }
+        )
         return data
     finally:
         s.close()
@@ -493,7 +509,9 @@ def update_hit(hit_id: int, update: dict) -> bool:
             if "location" in update:
                 hit.location = json.dumps(update["location"]) if update["location"] else None
             if "client_fingerprint" in update:
-                hit.client_fingerprint = json.dumps(update["client_fingerprint"]) if update["client_fingerprint"] else None
+                hit.client_fingerprint = (
+                    json.dumps(update["client_fingerprint"]) if update["client_fingerprint"] else None
+                )
             if "visitor_fp_id" in update:
                 fp = update.get("visitor_fp_id")
                 hit.visitor_fp_id = (str(fp).strip()[:FILTER_VISITOR_FP_MAX_LEN] or None) if fp else None
@@ -511,9 +529,13 @@ def count_prior_visits(visitor_fp_id: str, before_hit_id: int, link_id: int | No
     s = _session()
     try:
         _ensure_db()
-        q = s.query(func.count()).select_from(Hit).filter(
-            Hit.visitor_fp_id == fp,
-            Hit.id < int(before_hit_id),
+        q = (
+            s.query(func.count())
+            .select_from(Hit)
+            .filter(
+                Hit.visitor_fp_id == fp,
+                Hit.id < int(before_hit_id),
+            )
         )
         if link_id is not None:
             try:
@@ -598,6 +620,20 @@ def delete_all() -> int:
             s.close()
 
 
+def prune_hits_older_than(days: int) -> int:
+    """Delete hits older than the configured retention window."""
+    days = max(1, int(days))
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=days)
+    with _LOCK:
+        s = _session()
+        try:
+            count = s.query(Hit).filter(Hit.created_at < cutoff).delete(synchronize_session=False)
+            s.commit()
+            return int(count)
+        finally:
+            s.close()
+
+
 def get_geo_stats(limit: int = 5000, round_digits: int = 3) -> list[dict]:
     """Return aggregated points for map: [{lat, lng, weight}, ...] grouped by rounded coordinates."""
     s = _session()
@@ -610,6 +646,7 @@ def get_geo_stats(limit: int = 5000, round_digits: int = 3) -> list[dict]:
             s.query(rounded_lat.label("lat"), rounded_lng.label("lng"), func.count().label("weight"))
             .filter(Hit.latitude.isnot(None), Hit.longitude.isnot(None))
             .group_by(rounded_lat, rounded_lng)
+            .order_by(func.count().desc(), rounded_lat.asc(), rounded_lng.asc())
             .limit(limit)
             .all()
         )

@@ -1,10 +1,12 @@
 """Optional Discord and Telegram alerts for new trap hits (legacy env); configurable rules in hit_notifications."""
+
+import logging
 import os
-import threading
 from typing import Any
 
 import requests
 
+from background_tasks import submit_background
 from config_store import get_config
 from hit_notifications import (
     NOTIFICATION_PHASE_IMMEDIATE,
@@ -14,6 +16,7 @@ from hit_notifications import (
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+logger = logging.getLogger(__name__)
 
 
 def _discord_notify(record: dict[str, Any]) -> None:
@@ -37,8 +40,8 @@ def _discord_notify(record: dict[str, Any]) -> None:
             ],
         }
         requests.post(DISCORD_WEBHOOK_URL, json=body, timeout=10)
-    except Exception:
-        pass
+    except requests.RequestException as exc:
+        logger.warning("Legacy Discord notification failed: %s", type(exc).__name__)
 
 
 def _telegram_notify(record: dict[str, Any]) -> None:
@@ -53,8 +56,8 @@ def _telegram_notify(record: dict[str, Any]) -> None:
         text = f"Honeytoken hit\nIP: {ip}\nPath: {path}\nOS: {os_guess}\nBrowser: {browser}"
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
-    except Exception:
-        pass
+    except requests.RequestException as exc:
+        logger.warning("Legacy Telegram notification failed: %s", type(exc).__name__)
 
 
 def notify_hit(record: dict[str, Any], *, phase: str = NOTIFICATION_PHASE_IMMEDIATE) -> None:
@@ -70,5 +73,4 @@ def notify_hit(record: dict[str, Any], *, phase: str = NOTIFICATION_PHASE_IMMEDI
             _discord_notify(record)
             _telegram_notify(record)
 
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
+    submit_background(_run)

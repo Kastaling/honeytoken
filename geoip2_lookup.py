@@ -1,8 +1,12 @@
 """GeoIP2 lookup for latitude, longitude, and location from visitor IP (IPv4/IPv6)."""
+
+import logging
 import os
+from datetime import UTC, datetime
 from typing import Any
 
 _GEOIP_READER = None
+logger = logging.getLogger(__name__)
 
 
 def _get_reader():
@@ -14,9 +18,15 @@ def _get_reader():
         return None
     try:
         import geoip2.database
+
         _GEOIP_READER = geoip2.database.Reader(path)
+        build_time = datetime.fromtimestamp(_GEOIP_READER.metadata().build_epoch, tz=UTC)
+        age_days = (datetime.now(UTC) - build_time).days
+        if age_days > 45:
+            logger.warning("GeoLite2 database is %s days old; update %s", age_days, path)
         return _GEOIP_READER
     except Exception:
+        logger.exception("Unable to open GeoLite2 database: %s", path)
         return None
 
 
@@ -45,6 +55,7 @@ def get_lat_lng_city(ip: str) -> dict[str, Any] | None:
     try:
         r = reader.city(ip)
     except Exception:
+        logger.debug("GeoLite2 lookup failed for supplied address", exc_info=True)
         return None
     loc = getattr(r, "location", None)
     if loc is None:
@@ -65,8 +76,8 @@ def get_lat_lng_city(ip: str) -> dict[str, Any] | None:
             ms = subs.most_specific
             if getattr(ms, "name", None):
                 region = (ms.name or "").strip() or None
-    except Exception:
-        pass
+    except (AttributeError, TypeError, ValueError):
+        region = None
 
     country = None
     if getattr(r, "country", None) and getattr(r.country, "name", None):

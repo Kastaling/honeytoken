@@ -1,4 +1,5 @@
 """TCP/IP fingerprinting: guess OS and stack from headers."""
+
 from typing import Any
 
 

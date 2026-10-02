@@ -1,7 +1,8 @@
 """SQLAlchemy schema for hits and generated tracking links."""
+
 import json
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import Boolean, Column, DateTime, Float, Integer, String, Text
@@ -11,6 +12,10 @@ Base = declarative_base()
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 DB_PATH = DATA_DIR / "honey.db"
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DB_PATH}")
+
+
+def _utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Hit(Base):
@@ -29,7 +34,7 @@ class Hit(Base):
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
     city = Column(String(255), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utc_now_naive)
     client_fingerprint = Column(Text, nullable=True)  # JSON
     visitor_fp_id = Column(String(64), nullable=True, index=True)
     link_id = Column(Integer, nullable=True, index=True)
@@ -68,8 +73,8 @@ class TrackedLink(Base):
     label = Column(String(200), nullable=True)
     settings = Column(Text, nullable=False)  # JSON final-action settings
     active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=_utc_now_naive, nullable=False)
+    updated_at = Column(DateTime, default=_utc_now_naive, onupdate=_utc_now_naive, nullable=False)
 
     def to_dict(self) -> dict:
         return {

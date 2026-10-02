@@ -1,41 +1,45 @@
 """Private Admin Dashboard on port 4090; auth via ADMIN_USER / ADMIN_PASS."""
+
 import json
 import os
 import secrets
+import threading
 import time
-from pathlib import Path
+from datetime import UTC, datetime
 from functools import wraps
-from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
-from flask import Flask, request, Response, render_template_string, redirect, jsonify, make_response
+
+from flask import Flask, Response, jsonify, make_response, redirect, render_template_string, request
 from flask_wtf.csrf import CSRFProtect, generate_csrf
-from store import (
-    create_tracked_link,
-    get_hits,
-    get_hits_count,
-    delete_hit,
-    delete_hits,
-    delete_all,
-    get_geo_stats,
-    get_distinct_hosts,
-    get_tracked_link_stats,
-    LINK_TOKEN_MAX_LEN,
-    list_tracked_links,
-    RESERVED_LINK_TOKENS,
-    update_tracked_link,
-)
+
+from admin_final_actions import FINAL_ACTION_ACTION_TEMPLATE, FINAL_ACTIONS_CSS, FINAL_ACTIONS_JS
+from background_tasks import background_status
 from config_store import (
     ACTION_URL_MAX_LEN,
     DEFAULT_TIMEZONE,
-    get_config,
     MAX_FINAL_ACTIONS,
+    get_config,
     normalize_action_settings,
     save_config,
-    VALID_STATUS_CODES,
 )
-from admin_final_actions import FINAL_ACTIONS_CSS, FINAL_ACTION_ACTION_TEMPLATE, FINAL_ACTIONS_JS
 from hit_notifications import normalize_notification_rules, send_discord_notification_test
 from proxy_trust import cloudflare_cidrs
+from store import (
+    LINK_TOKEN_MAX_LEN,
+    RESERVED_LINK_TOKENS,
+    create_tracked_link,
+    delete_all,
+    delete_hit,
+    delete_hits,
+    get_distinct_hosts,
+    get_geo_stats,
+    get_hits,
+    get_hits_count,
+    get_tracked_link_stats,
+    list_tracked_links,
+    update_tracked_link,
+)
 
 app = Flask(__name__)
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
@@ -50,6 +54,10 @@ csrf = CSRFProtect(app)
 
 _NR_TEST_LAST_BY_IP: dict[str, float] = {}
 _NR_TEST_COOLDOWN_SEC = 8.0
+_AUTH_FAILURES: dict[str, list[float]] = {}
+_AUTH_FAILURES_LOCK = threading.Lock()
+_AUTH_FAILURE_WINDOW_SEC = 60.0
+_AUTH_FAILURE_LIMIT = 20
 
 
 def _notification_rule_test_rate_ok(ip: str) -> bool:
@@ -66,7 +74,7 @@ def _notification_rule_test_rate_ok(ip: str) -> bool:
 
 
 MEDIA_EXTENSIONS = frozenset(
-    ".mp4 .webm .mov .ogg .m4v .mkv .avi .jpg .jpeg .png .gif .webp".split()
+    [".mp4", ".webm", ".mov", ".ogg", ".m4v", ".mkv", ".avi", ".jpg", ".jpeg", ".png", ".gif", ".webp"]
 )
 
 STATUS_OPTIONS = [
@@ -90,9 +98,7 @@ STATUS_OPTIONS = [
 def validate_admin_auth_config() -> None:
     """Refuse to start with missing or default admin credentials."""
     if ADMIN_PASS in _DEFAULT_ADMIN_PASSWORDS:
-        raise SystemExit(
-            "ADMIN_PASS must be set to a strong, non-default password (not empty or 'changeme')."
-        )
+        raise SystemExit("ADMIN_PASS must be set to a strong, non-default password (not empty or 'changeme').")
     if ADMIN_SECRET_KEY in _DEFAULT_ADMIN_SECRET_KEYS:
         raise SystemExit(
             "ADMIN_SECRET_KEY must be set to a random secret (used for CSRF tokens; not empty or 'changeme')."
@@ -114,16 +120,58 @@ def _check_auth():
     return user_ok and pass_ok
 
 
+def _auth_rate_limited(ip: str) -> bool:
+    now = time.monotonic()
+    with _AUTH_FAILURES_LOCK:
+        recent = [t for t in _AUTH_FAILURES.get(ip, []) if now - t < _AUTH_FAILURE_WINDOW_SEC]
+        _AUTH_FAILURES[ip] = recent
+        return len(recent) >= _AUTH_FAILURE_LIMIT
+
+
+def _record_auth_failure(ip: str) -> None:
+    with _AUTH_FAILURES_LOCK:
+        _AUTH_FAILURES.setdefault(ip, []).append(time.monotonic())
+
+
+def _clear_auth_failures(ip: str) -> None:
+    with _AUTH_FAILURES_LOCK:
+        _AUTH_FAILURES.pop(ip, None)
+
+
+@app.after_request
+def _admin_security_headers(response):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+        "img-src 'self' data: https://*.basemaps.cartocdn.com; "
+        "connect-src 'self'; object-src 'none'; base-uri 'self'; "
+        "frame-ancestors 'none'; form-action 'self'"
+    )
+    return response
+
+
 def _auth_required(f):
     @wraps(f)
     def wrapped(*args, **kwargs):
+        client_ip = request.remote_addr or "unknown"
+        if _auth_rate_limited(client_ip):
+            return Response("Too many authentication failures", 429, {"Retry-After": "60"})
         if not _check_auth():
+            _record_auth_failure(client_ip)
             return Response(
                 "Authentication required",
                 401,
                 {"WWW-Authenticate": 'Basic realm="Admin Dashboard"'},
             )
+        _clear_auth_failures(client_ip)
         return f(*args, **kwargs)
+
     return wrapped
 
 
@@ -239,18 +287,20 @@ def _action_settings_from_form(form) -> dict:
     from_json = _action_settings_from_json(form.get("action_settings_json"))
     if from_json is not None:
         return from_json
-    return normalize_action_settings({
-        "mode": form.get("mode"),
-        "default_redirect_url": form.get("default_redirect_url"),
-        "media_url": form.get("media_url"),
-        "media_type": form.get("media_type"),
-        "media_tab_mode": form.get("media_tab_mode"),
-        "media_tab_static_text": form.get("media_tab_static_text"),
-        "media_tab_scrolling_text": form.get("media_tab_scrolling_text"),
-        "media_tab_rotating_messages": form.get("media_tab_rotating_messages"),
-        "media_tab_rotate_interval_sec": form.get("media_tab_rotate_interval_sec"),
-        "status_code": form.get("status_code"),
-    })
+    return normalize_action_settings(
+        {
+            "mode": form.get("mode"),
+            "default_redirect_url": form.get("default_redirect_url"),
+            "media_url": form.get("media_url"),
+            "media_type": form.get("media_type"),
+            "media_tab_mode": form.get("media_tab_mode"),
+            "media_tab_static_text": form.get("media_tab_static_text"),
+            "media_tab_scrolling_text": form.get("media_tab_scrolling_text"),
+            "media_tab_rotating_messages": form.get("media_tab_rotating_messages"),
+            "media_tab_rotate_interval_sec": form.get("media_tab_rotate_interval_sec"),
+            "status_code": form.get("status_code"),
+        }
+    )
 
 
 def _spam_summary_updates_from_form(form) -> dict:
@@ -275,10 +325,8 @@ def _external_scheme() -> str:
 def _tracked_link_public_scheme() -> str:
     """HTTPS for honeypot links in admin UI (containers often see HTTP; public URL is HTTPS)."""
     scheme = (
-        os.environ.get("TRACKED_LINK_PUBLIC_SCHEME")
-        or os.environ.get("PUBLIC_URL_SCHEME")
-        or "https"
-    ).strip().lower()
+        (os.environ.get("TRACKED_LINK_PUBLIC_SCHEME") or os.environ.get("PUBLIC_URL_SCHEME") or "https").strip().lower()
+    )
     return scheme if scheme in ("http", "https") else "https"
 
 
@@ -292,13 +340,13 @@ def _format_ts_readable(ts, tz_name=DEFAULT_TIMEZONE):
         return "—"
     s = (ts.strip() or "").replace("Z", "+00:00")
     try:
-        dt_utc = datetime.fromisoformat(s[:26].rstrip("Z")).replace(tzinfo=timezone.utc)
+        dt_utc = datetime.fromisoformat(s[:26].rstrip("Z")).replace(tzinfo=UTC)
     except (ValueError, TypeError):
         return "—"
     try:
         tz = ZoneInfo(tz_name)
     except (ValueError, Exception):
-        tz = timezone.utc
+        tz = UTC
     local = dt_utc.astimezone(tz)
     return local.strftime("%b %d, %Y, %I:%M:%S %p")
 
@@ -310,7 +358,7 @@ DASHBOARD_HTML = """
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Honeytoken Admin – {{ domain }}</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
   <style>
     :root { --bg: #0a0a0b; --surface: #141416; --border: #27272a; --muted: #71717a; --text: #fafafa; --accent: #3b82f6; --green: #22c55e; --amber: #f59e0b; --purple: #a78bfa; }
     * { box-sizing: border-box; }
@@ -724,13 +772,14 @@ DASHBOARD_HTML = """
     <p class="empty">No hits yet.</p>
     {% endif %}
   </div>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js" crossorigin=""></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js" integrity="sha384-mFKkGiGvT5vo1fEyGCD3hshDdKmW3wzXW/x+fWriYJArD0R3gawT6lMvLboM22c0" crossorigin="anonymous"></script>
   <script>
     (function() {
       var CARTO_API_KEY = {{ carto_api_key | tojson }};
       var CARTODB_DARK = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=' + encodeURIComponent(CARTO_API_KEY);
-      var geoPoints = {{ page_geo_points | tojson }};
+      var pageGeoPoints = {{ page_geo_points | tojson }};
+      var geoPoints = pageGeoPoints.slice();
       /** Group hits that share ~same GeoIP cell so circles do not pile up as one giant overlapping blob. */
       function aggregateGeoForMap(points, decimals) {
         decimals = typeof decimals === 'number' ? decimals : 4;
@@ -749,7 +798,7 @@ DASHBOARD_HTML = """
         });
         return Object.keys(m).map(function(k) { return m[k]; });
       }
-      var geoAgg = aggregateGeoForMap(geoPoints);
+      var geoAgg = [];
       var mainMap = null;
       var heatLayer = null;
       var circleLayer = null;
@@ -786,6 +835,35 @@ DASHBOARD_HTML = """
             toggleDetail(id, true);
           });
         });
+      }
+
+      function rebuildGeoAggregation() {
+        geoAgg = aggregateGeoForMap(geoPoints, 3);
+        var pageCells = {};
+        aggregateGeoForMap(pageGeoPoints, 3).forEach(function(p) {
+          var key = Number(p.lat).toFixed(3) + '_' + Number(p.lng).toFixed(3);
+          pageCells[key] = p.hit_ids || [];
+        });
+        geoAgg.forEach(function(p) {
+          var key = Number(p.lat).toFixed(3) + '_' + Number(p.lng).toFixed(3);
+          p.hit_ids = pageCells[key] || [];
+        });
+      }
+
+      function fitGeoBounds() {
+        if (!mainMap || !geoPoints.length) return;
+        var bounds = L.latLngBounds(geoPoints.map(function(p) { return [p.lat, p.lng]; }));
+        var ne = bounds.getNorthEast();
+        var sw = bounds.getSouthWest();
+        var diagonalMeters = bounds.isValid() ? ne.distanceTo(sw) : 0;
+        if (!bounds.isValid() || diagonalMeters < 80) {
+          var sumLat = 0;
+          var sumLng = 0;
+          geoPoints.forEach(function(p) { sumLat += Number(p.lat); sumLng += Number(p.lng); });
+          mainMap.setView([sumLat / geoPoints.length, sumLng / geoPoints.length], 11);
+        } else {
+          mainMap.fitBounds(bounds, { padding: [28, 28], maxZoom: 14 });
+        }
       }
 
       function renderGeoView() {
@@ -825,12 +903,11 @@ DASHBOARD_HTML = """
               fillOpacity: Math.min(0.65, 0.35 + 0.08 * Math.min(n, 6)),
               weight: Math.min(4, n >= 10 ? 3 : (n >= 4 ? 2 : 1))
             });
-            if (p.hit_ids && p.hit_ids.length > 1) {
-              marker.bindTooltip(String(n) + ' hits · same map cell', { direction: 'top', sticky: true, opacity: 0.92 });
+            if (p.hit_ids && p.hit_ids.length) {
+              marker.bindTooltip(String(n) + ' hits · click to open a hit on this page', { direction: 'top', sticky: true, opacity: 0.92 });
               marker.on('click', function() { scrollToHitAndExpand(p.hit_ids[0]); });
-            } else if (p.hit_ids && p.hit_ids.length === 1) {
-              marker.bindTooltip('Hit #' + String(p.hit_ids[0]), { direction: 'top', sticky: true, opacity: 0.9 });
-              marker.on('click', function() { scrollToHitAndExpand(p.hit_ids[0]); });
+            } else {
+              marker.bindTooltip(String(n) + ' hits', { direction: 'top', sticky: true, opacity: 0.9 });
             }
             marker.addTo(circleLayer);
           });
@@ -839,22 +916,22 @@ DASHBOARD_HTML = """
       }
 
       initMainMap();
-      if (geoPoints.length) {
-        var bounds = L.latLngBounds(geoPoints.map(function(p) { return [p.lat, p.lng]; }));
-        var ne = bounds.getNorthEast();
-        var sw = bounds.getSouthWest();
-        var diagonalMeters = bounds.isValid() ? ne.distanceTo(sw) : 0;
-        if (!bounds.isValid() || diagonalMeters < 80) {
-          var sumLat = 0;
-          var sumLng = 0;
-          geoPoints.forEach(function(p) { sumLat += p.lat; sumLng += p.lng; });
-          var inv = geoPoints.length ? 1 / geoPoints.length : 1;
-          mainMap.setView([sumLat * inv, sumLng * inv], 11);
-        } else {
-          mainMap.fitBounds(bounds, { padding: [28, 28], maxZoom: 14 });
-        }
-      }
+      rebuildGeoAggregation();
+      fitGeoBounds();
       renderGeoView();
+      fetch('/api/geo-stats?limit=20000&round=3', { credentials: 'same-origin' })
+        .then(function(response) {
+          if (!response.ok) throw new Error('geo stats request failed');
+          return response.json();
+        })
+        .then(function(points) {
+          if (!Array.isArray(points)) return;
+          geoPoints = points;
+          rebuildGeoAggregation();
+          fitGeoBounds();
+          renderGeoView();
+        })
+        .catch(function() {});
 
       document.querySelectorAll('input[name=geo-mode]').forEach(function(radio) {
         radio.addEventListener('change', function() {
@@ -2774,8 +2851,15 @@ NGINX_HTML = """
 
 def _parse_filters():
     """Build filter dict from request.args; validated and safe for store."""
-    from store import FILTER_LOCATION_MAX_LEN, FILTER_PATH_MAX_LEN, FILTER_HOST_MAX_ITEMS, FILTER_HOST_MAX_LEN, FILTER_VISITOR_FP_MAX_LEN
+    from store import (
+        FILTER_HOST_MAX_ITEMS,
+        FILTER_HOST_MAX_LEN,
+        FILTER_LOCATION_MAX_LEN,
+        FILTER_PATH_MAX_LEN,
+        FILTER_VISITOR_FP_MAX_LEN,
+    )
     from visitor_fingerprint import visitor_fp_filter_token
+
     filters = {}
     gpu = (request.args.get("gpu") or "").strip().lower()
     if gpu in ("yes", "y", "1", "true"):
@@ -2816,8 +2900,15 @@ def _parse_filters():
 
 def _parse_filters_from_form(form):
     """Build filter dict from form (e.g. return_* after delete); same shape as _parse_filters()."""
-    from store import FILTER_LOCATION_MAX_LEN, FILTER_PATH_MAX_LEN, FILTER_HOST_MAX_ITEMS, FILTER_HOST_MAX_LEN, FILTER_VISITOR_FP_MAX_LEN
+    from store import (
+        FILTER_HOST_MAX_ITEMS,
+        FILTER_HOST_MAX_LEN,
+        FILTER_LOCATION_MAX_LEN,
+        FILTER_PATH_MAX_LEN,
+        FILTER_VISITOR_FP_MAX_LEN,
+    )
     from visitor_fingerprint import visitor_fp_filter_token
+
     filters = {}
     gpu = (form.get("return_gpu") or "").strip().lower()
     if gpu in ("yes", "y", "1", "true"):
@@ -2855,9 +2946,20 @@ def _parse_filters_from_form(form):
     return filters
 
 
-def _filter_query_string(gpu=None, fingerprint=None, location=None, path=None, hosts=None, link=None, visitor_fp=None, repeat=None, sort_visitor=None):
+def _filter_query_string(
+    gpu=None,
+    fingerprint=None,
+    location=None,
+    path=None,
+    hosts=None,
+    link=None,
+    visitor_fp=None,
+    repeat=None,
+    sort_visitor=None,
+):
     """Build query string for filter params (for pagination links)."""
     from urllib.parse import urlencode
+
     params = []
     if gpu is not None and gpu != "":
         params.append(("gpu", gpu))
@@ -2879,6 +2981,11 @@ def _filter_query_string(gpu=None, fingerprint=None, location=None, path=None, h
     if link is not None and link != "":
         params.append(("link", link))
     return ("&" + urlencode(params)) if params else ""
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify(status="ok")
 
 
 @app.route("/")
@@ -2909,12 +3016,14 @@ def dashboard():
         lat, lng = h.get("latitude"), h.get("longitude")
         if lat is not None and lng is not None:
             try:
-                page_geo_points.append({
-                    "lat": float(lat),
-                    "lng": float(lng),
-                    "weight": 1,
-                    "hit_id": int(h.get("_id")),
-                })
+                page_geo_points.append(
+                    {
+                        "lat": float(lat),
+                        "lng": float(lng),
+                        "weight": 1,
+                        "hit_id": int(h.get("_id")),
+                    }
+                )
             except (TypeError, ValueError):
                 pass
     try:
@@ -2935,7 +3044,12 @@ def dashboard():
     tracked_links = list_tracked_links(sort="newest", limit=1000)
     tracked_links_by_id = {link["_id"]: link for link in tracked_links}
     filter_query_string = _filter_query_string(
-        filter_gpu, filter_fingerprint, filter_location, filter_path, filter_hosts, filter_link,
+        filter_gpu,
+        filter_fingerprint,
+        filter_location,
+        filter_path,
+        filter_hosts,
+        filter_link,
         visitor_fp=filter_visitor_fp or None,
         repeat=filter_repeat or None,
         sort_visitor=bool(filters.get("sort_by_visitor_fp")),
@@ -3016,9 +3130,9 @@ def _redirect_after_hit_delete(form, deleted: int | None = None):
         repeat=repeat_q,
         sort_visitor=bool(filters.get("sort_by_visitor_fp")),
     )
-    url = "/?page={}&per_page={}{}".format(return_page, return_per_page, qs)
+    url = f"/?page={return_page}&per_page={return_per_page}{qs}"
     if deleted:
-        url += "&deleted={}".format(int(deleted))
+        url += f"&deleted={int(deleted)}"
     return redirect(url)
 
 
@@ -3121,7 +3235,9 @@ def links():
             )
             return response
         except (RuntimeError, ValueError):
-            return _render_links_page(error="Unable to create link. Check that the custom URL text is unique and URL-safe."), 400
+            return _render_links_page(
+                error="Unable to create link. Check that the custom URL text is unique and URL-safe."
+            ), 400
     return _render_links_page()
 
 
@@ -3311,6 +3427,12 @@ def api_geo_stats():
         ]
         return jsonify({"type": "FeatureCollection", "features": features})
     return jsonify(points)
+
+
+@app.route("/api/status")
+@_auth_required
+def api_status():
+    return jsonify(status="ok", background=background_status())
 
 
 @app.route("/api/media-files")

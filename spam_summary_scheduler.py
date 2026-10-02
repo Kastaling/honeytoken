@@ -1,11 +1,12 @@
 """Scheduled Discord spam/burst summaries (daily and weekly tiers, independent cursors)."""
+
 from __future__ import annotations
 
 import logging
 import os
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import requests
@@ -28,7 +29,7 @@ _LOCK = threading.Lock()
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _parse_ts(raw: str) -> datetime | None:
@@ -40,7 +41,7 @@ def _parse_ts(raw: str) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
     return dt
 
 

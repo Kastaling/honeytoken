@@ -9,11 +9,12 @@ Usage (inside container or with DATA_DIR/honey.db available):
 Docker:
   docker exec honey python3 analyze_spam.py --hours 24
 """
+
 from __future__ import annotations
 
 import argparse
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from spam_analysis import (
@@ -33,12 +34,10 @@ def _parse_timestamp_arg(raw: str, label: str) -> str:
         return ""
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        raise SystemExit(
-            f"Invalid --{label} timestamp {raw!r}; use ISO format like YYYY-MM-DD HH:MM:SS"
-        )
+    except ValueError as exc:
+        raise SystemExit(f"Invalid --{label} timestamp {raw!r}; use ISO format like YYYY-MM-DD HH:MM:SS") from exc
     if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
     return dt.isoformat(sep=" ")
 
 

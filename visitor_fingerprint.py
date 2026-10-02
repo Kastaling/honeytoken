@@ -1,4 +1,5 @@
 """Browser visitor fingerprint: normalize client signals, stable ID, visit stats."""
+
 from __future__ import annotations
 
 import hashlib

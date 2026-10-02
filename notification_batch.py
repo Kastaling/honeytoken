@@ -11,12 +11,13 @@ thread pool). Do not run under multi-worker servers (e.g. gunicorn with workers 
 without replacing this with shared storage — each worker would maintain separate
 batch state and debouncing would not work as intended.
 """
+
 from __future__ import annotations
 
 import threading
-import time
 from collections import Counter
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 DEFAULT_BATCH_WINDOW_SEC = 30
 MIN_BATCH_WINDOW_SEC = 5

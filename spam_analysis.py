@@ -1,10 +1,11 @@
 """Burst/spam analysis over honeypot hits (shared by CLI and scheduled summaries)."""
+
 from __future__ import annotations
 
 import sqlite3
 from collections import Counter
 from collections.abc import Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -32,17 +33,22 @@ def fetch_hits(
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
     if start and end:
-        start_op = ">" if start_exclusive else ">="
-        cur.execute(
-            f"""
+        query = (
+            """
             SELECT id, ip, host, path, created_at, location_display, visitor_fp_id,
                    json_extract(client_fingerprint, '$.webgl_renderer') AS webgl
-            FROM hits
-            WHERE created_at {start_op} ? AND created_at <= ?
+            FROM hits WHERE created_at > ? AND created_at <= ?
             ORDER BY created_at ASC
-            """,
-            (start, end),
+            """
+            if start_exclusive
+            else """
+            SELECT id, ip, host, path, created_at, location_display, visitor_fp_id,
+                   json_extract(client_fingerprint, '$.webgl_renderer') AS webgl
+            FROM hits WHERE created_at >= ? AND created_at <= ?
+            ORDER BY created_at ASC
+            """
         )
+        cur.execute(query, (start, end))
     else:
         cur.execute("SELECT MAX(created_at) FROM hits")
         latest = cur.fetchone()[0]
@@ -179,20 +185,14 @@ def format_spam_report_text(report: dict[str, Any]) -> str:
         )
         hosts = burst.get("hosts") or []
         if hosts:
-            lines.append(
-                "Hosts: "
-                + ", ".join(f"{h['host']} ({h['count']})" for h in hosts[:6])
-            )
+            lines.append("Hosts: " + ", ".join(f"{h['host']} ({h['count']})" for h in hosts[:6]))
         lines.append("Top IPs:")
         for row in burst.get("top_ips") or []:
             loc = f"  {row['location']}" if row.get("location") else ""
             lines.append(f"  {row['count']:4d}  {row['ip']:42s}{loc}")
         wgs = burst.get("webgl_samples") or []
         if wgs:
-            lines.append(
-                "WebGL samples: "
-                + ", ".join(f"{w['renderer']!r} ({w['count']})" for w in wgs)
-            )
+            lines.append("WebGL samples: " + ", ".join(f"{w['renderer']!r} ({w['count']})" for w in wgs))
     if burst_count == 0:
         lines.append("No multi-hit bursts detected in this window.")
     return "\n".join(lines)
@@ -211,10 +211,7 @@ def format_spam_report_discord_description(report: dict[str, Any], *, tier_label
     ]
     hot = report.get("hot_minutes") or []
     if hot:
-        lines.append(
-            "**Busiest minutes:** "
-            + " · ".join(f"`{h['minute']}` ({h['count']})" for h in hot[:5])
-        )
+        lines.append("**Busiest minutes:** " + " · ".join(f"`{h['minute']}` ({h['count']})" for h in hot[:5]))
     burst_count = int(report.get("burst_count") or 0)
     window = int(report.get("burst_window_sec") or 60)
     lines.append(f"**Bursts** (≥{MIN_BURST_HITS} hits / {window}s): **{burst_count}**")
@@ -225,19 +222,13 @@ def format_spam_report_discord_description(report: dict[str, Any], *, tier_label
         )
         hosts = burst.get("hosts") or []
         if hosts:
-            lines.append(
-                "Hosts: "
-                + ", ".join(f"`{h['host']}`×{h['count']}" for h in hosts[:4])
-            )
+            lines.append("Hosts: " + ", ".join(f"`{h['host']}`×{h['count']}" for h in hosts[:4]))
         for row in (burst.get("top_ips") or [])[:5]:
             loc = f" — {row['location']}" if row.get("location") else ""
             lines.append(f"• `{row['ip']}` ×{row['count']}{loc}")
         wgs = burst.get("webgl_samples") or []
         if wgs:
-            lines.append(
-                "WebGL: "
-                + " · ".join(f"`{w['renderer'][:40]}`×{w['count']}" for w in wgs[:2])
-            )
+            lines.append("WebGL: " + " · ".join(f"`{w['renderer'][:40]}`×{w['count']}" for w in wgs[:2]))
     shown = int(report.get("bursts_shown") or 0)
     if burst_count > shown:
         lines.append(f"\n_+ {burst_count - shown} more burst(s) not shown._")
@@ -254,7 +245,7 @@ def _parse_ts(raw: str) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
     return dt
 
 
@@ -292,9 +283,7 @@ def normalize_spam_summary_settings(cfg: dict | None) -> dict[str, Any]:
         out[f"spam_summary_{tier}_enabled"] = enabled and bool(url)
         out[f"spam_summary_{tier}_webhook_url"] = url
         out[f"spam_summary_{tier}_interval_hours"] = hours
-        out[f"spam_summary_{tier}_last_sent_at"] = (
-            last_dt.isoformat(sep=" ") if last_dt else ""
-        )
+        out[f"spam_summary_{tier}_last_sent_at"] = last_dt.isoformat(sep=" ") if last_dt else ""
     out["spam_summary_burst_window_sec"] = _clamp_int(
         cfg.get("spam_summary_burst_window_sec"),
         default=DEFAULT_BURST_WINDOW_SEC,

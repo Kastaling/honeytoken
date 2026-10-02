@@ -1,5 +1,7 @@
 """Persistent config for trap final action: redirect URL or status code."""
+
 import json
+import logging
 import os
 import random
 import re
@@ -15,6 +17,7 @@ from spam_analysis import normalize_spam_summary_settings
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 CONFIG_FILE = DATA_DIR / "config.json"
 _LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEZONE = "UTC"
 
@@ -56,8 +59,20 @@ MAX_FINAL_ACTIONS = 20
 ACTION_LABEL_MAX_LEN = 80
 _ACTION_ID_RE = re.compile(r"^[a-f0-9]{8,32}$")
 VALID_STATUS_CODES = (
-    403, 404, 410, 412, 418,
-    500, 501, 502, 503, 504, 505, 506, 507, 508,
+    403,
+    404,
+    410,
+    412,
+    418,
+    500,
+    501,
+    502,
+    503,
+    504,
+    505,
+    506,
+    507,
+    508,
 )
 
 
@@ -177,7 +192,10 @@ def resolve_action_for_capture(opts: dict | None) -> dict:
     normalized = normalize_action_settings(opts)
     pool = normalized.get("actions") or []
     if normalized.get("random_actions_enabled") and pool:
-        return normalize_single_action(random.choice(pool))
+        # Randomness provides variety only; it does not control authorization or secrets.
+        return normalize_single_action(
+            random.choice(pool)  # noqa: S311  # nosec B311
+        )
     return normalize_single_action(normalized)
 
 
@@ -262,7 +280,15 @@ def get_config() -> dict:
         _ensure_data_dir()
         if not CONFIG_FILE.exists():
             return dict(DEFAULTS)
-        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.exception("Unable to read configuration from %s", CONFIG_FILE)
+            backup = CONFIG_FILE.with_suffix(".json.bak")
+            if not backup.exists():
+                raise
+            logger.warning("Loading last-known-good configuration from %s", backup)
+            data = json.loads(backup.read_text(encoding="utf-8"))
         out = dict(DEFAULTS)
         out.update(data)
         out.update(normalize_action_settings(out))
@@ -308,7 +334,15 @@ def save_config(updates: dict) -> dict:
         else:
             current["notification_rules"] = []
         current.update(normalize_spam_summary_settings(current))
-        CONFIG_FILE.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        serialized = json.dumps(current, indent=2)
+        temp_file = CONFIG_FILE.with_suffix(".json.tmp")
+        backup_file = CONFIG_FILE.with_suffix(".json.bak")
+        temp_file.write_text(serialized, encoding="utf-8")
+        with temp_file.open("rb") as handle:
+            os.fsync(handle.fileno())
+        if CONFIG_FILE.exists():
+            backup_file.write_bytes(CONFIG_FILE.read_bytes())
+        os.replace(temp_file, CONFIG_FILE)
         return dict(DEFAULTS) | current
     finally:
         _LOCK.release()
