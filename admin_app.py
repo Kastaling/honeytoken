@@ -48,7 +48,6 @@ ADMIN_SECRET_KEY = os.environ.get("ADMIN_SECRET_KEY", "")
 CARTO_API_KEY = os.environ.get("CARTO_API_KEY", "").strip()
 ROOT_DOMAIN = os.environ.get("ROOT_DOMAIN", "example.com")
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
-_DEFAULT_ADMIN_PASSWORDS = frozenset({"", "changeme"})
 _DEFAULT_ADMIN_SECRET_KEYS = frozenset({"", "changeme", "change-me"})
 csrf = CSRFProtect(app)
 
@@ -96,9 +95,9 @@ STATUS_OPTIONS = [
 
 
 def validate_admin_auth_config() -> None:
-    """Refuse to start with missing or default admin credentials."""
-    if ADMIN_PASS in _DEFAULT_ADMIN_PASSWORDS:
-        raise SystemExit("ADMIN_PASS must be set to a strong, non-default password (not empty or 'changeme').")
+    """Refuse to start without the values required for Basic Auth and CSRF."""
+    if not ADMIN_PASS:
+        raise SystemExit("ADMIN_PASS must be set (no length or complexity policy is enforced).")
     if ADMIN_SECRET_KEY in _DEFAULT_ADMIN_SECRET_KEYS:
         raise SystemExit(
             "ADMIN_SECRET_KEY must be set to a random secret (used for CSRF tokens; not empty or 'changeme')."

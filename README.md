@@ -32,7 +32,7 @@ Keep the admin port off the public internet. For Tailscale MagicDNS, set `ADMIN_
 | Variable | Description |
 |----------|-------------|
 | `ADMIN_USER` | Dashboard login username (default: `admin`) |
-| `ADMIN_PASS` | Dashboard login password (**required**; empty and `changeme` are rejected at startup) |
+| `ADMIN_PASS` | Dashboard login password (**required**; no length or complexity policy is imposed) |
 | `ADMIN_SECRET_KEY` | Random secret used to sign admin CSRF tokens (**required**) |
 | `CARTO_API_KEY` | CARTO Basemaps key used by the dashboard map (**required**) |
 | `ADMIN_BIND_IP` | Host address that publishes port 4090 (default: `127.0.0.1`; use the host's Tailscale IPv4 address for MagicDNS) |
