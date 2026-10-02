@@ -33,6 +33,8 @@ Keep the admin port off the public internet or protect it with a VPN/firewall.
 |----------|-------------|
 | `ADMIN_USER` | Dashboard login username (default: `admin`) |
 | `ADMIN_PASS` | Dashboard login password (**required**; empty and `changeme` are rejected at startup) |
+| `ADMIN_SECRET_KEY` | Random secret used to sign admin CSRF tokens (**required**) |
+| `CARTO_API_KEY` | CARTO Basemaps key used by the dashboard map (**required**) |
 | `TRAP_THREADS` / `ADMIN_THREADS` | Waitress worker threads (defaults: 8 / 4) |
 | `TRAP_CONNECTION_LIMIT` / `ADMIN_CONNECTION_LIMIT` | Max concurrent connections per service (defaults: 64 / 32) |
 | `ROOT_DOMAIN` | Primary domain for link previews (default: `example.com`) |

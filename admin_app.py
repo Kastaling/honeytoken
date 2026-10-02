@@ -41,6 +41,7 @@ app = Flask(__name__)
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "")
 ADMIN_SECRET_KEY = os.environ.get("ADMIN_SECRET_KEY", "")
+CARTO_API_KEY = os.environ.get("CARTO_API_KEY", "").strip()
 ROOT_DOMAIN = os.environ.get("ROOT_DOMAIN", "example.com")
 MEDIA_DIR = Path(os.environ.get("MEDIA_DIR", "/media"))
 _DEFAULT_ADMIN_PASSWORDS = frozenset({"", "changeme"})
@@ -727,7 +728,8 @@ DASHBOARD_HTML = """
   <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js" crossorigin=""></script>
   <script>
     (function() {
-      var CARTODB_DARK = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+      var CARTO_API_KEY = {{ carto_api_key | tojson }};
+      var CARTODB_DARK = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=' + encodeURIComponent(CARTO_API_KEY);
       var geoPoints = {{ page_geo_points | tojson }};
       /** Group hits that share ~same GeoIP cell so circles do not pile up as one giant overlapping blob. */
       function aggregateGeoForMap(points, decimals) {
@@ -756,8 +758,12 @@ DASHBOARD_HTML = """
 
       function initMainMap() {
         if (mainMap) return;
-        mainMap = L.map('geo-map', { attributionControl: false }).setView([20, 0], 2);
-        L.tileLayer(CARTODB_DARK, { subdomains: 'abcd', maxZoom: 19 }).addTo(mainMap);
+        mainMap = L.map('geo-map').setView([20, 0], 2);
+        L.tileLayer(CARTODB_DARK, {
+          subdomains: 'abcd',
+          maxZoom: 19,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+        }).addTo(mainMap);
       }
 
       function latLngToTile(lat, lng, zoom) {
@@ -2943,6 +2949,7 @@ def dashboard():
         total_pages=total_pages,
         per_page_options=PER_PAGE_OPTIONS,
         page_geo_points=page_geo_points,
+        carto_api_key=CARTO_API_KEY,
         domain=ROOT_DOMAIN,
         timezone=display_tz,
         location_str=_location_str,
