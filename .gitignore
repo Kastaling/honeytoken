@@ -13,6 +13,7 @@ media/
 
 # Runtime data and SQLite
 data/
+backups/
 *.db
 *.db-journal
 *.db-wal
