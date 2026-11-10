@@ -12,7 +12,7 @@ Honeytoken Logger is a self-hosted web honeypot and tracked-link service. `run.p
 
 ## Development and verification
 
-The project supports Python 3.12–3.14; CI tests each version, and the deployment container runs Python 3.14. From the repository root, install `requirements.lock` and `requirements-dev.txt` in an isolated environment, then run:
+The project supports Python 3.12–3.15; CI tests each version, and the deployment container runs Python 3.15. From the repository root, install `requirements.lock` and `requirements-dev.txt` in an isolated environment, then run:
 
 ```sh
 ruff check .
